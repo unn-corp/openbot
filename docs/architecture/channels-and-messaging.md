@@ -265,8 +265,8 @@ them. A lead change does not move a task that already has an owner. The member p
 Channel tools retrieve history, assign a child task, transfer ownership, and report results. The
 runtime supplies channel and caller identity. A child keeps its parent owner; a transfer changes it.
 Only assignments and awaited results start turns. Completed child results are combined before the
-owner returns. The limit is eight automatic assignments per root request and two active assignments
-per channel (`CHANNEL_PARALLEL_LIMIT`).
+owner returns. This fork sets no limit on automatic assignments per root request (`CHANNEL_ASSIGNMENT_LIMIT`;
+upstream uses eight) and keeps two active assignments per channel (`CHANNEL_PARALLEL_LIMIT`).
 
 An agent can also give work to a channel from another conversation, such as its direct chat with
 the user. `list_channels` lists the open channels with their lead and members.
