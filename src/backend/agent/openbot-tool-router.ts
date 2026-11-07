@@ -1289,16 +1289,22 @@ export class OpenBotToolRouter {
     );
     if (flowResult) return flowResult;
 
+    // An owner or admin may use the workflow tools from a chat or a channel task as well. A routine
+    // run, an agent's message and an external chat still cannot, as they can carry outside text.
+    const workflowAdmin = WORKFLOW_TOOL_NAMES.has(params.tool)
+      ? yield* this.#requestedByAdmin(senderAgentId, params.turnId, executionThreadId)
+      : false;
     if (
       WORKFLOW_CHANGE_TOOL_NAMES.has(params.tool) &&
+      !workflowAdmin &&
       !this.#requestedByPerson(senderAgentId, params.turnId, executionThreadId)
     )
       return openBotToolFailure(
-        "Only a person's message, in your OpenBot chat or a thread they opened, can change, delete or run a workflow. Ask the user to request it there.",
+        "Only a person's message, in your OpenBot chat or a thread they opened, can change, delete or run a workflow, and so can an owner's or admin's request in a channel. Ask the user to request it there.",
       );
     // A read gives every workflow, its webhook URLs and its run outputs. The Team API hides these
     // from a member by agent access and admin rights, so a member's message does not get them here.
-    if (WORKFLOW_TOOL_NAMES.has(params.tool) && this.#fromRemoteMember(senderAgentId, params.turnId))
+    if (WORKFLOW_TOOL_NAMES.has(params.tool) && !workflowAdmin && this.#fromRemoteMember(senderAgentId, params.turnId))
       return openBotToolFailure("A team member's message cannot read workflows. Ask the member to use Workflows.");
     // The agent list is read only for a workflow tool, not on each OpenBot tool call.
     if (WORKFLOW_TOOL_NAMES.has(params.tool)) {
@@ -1718,11 +1724,13 @@ export class OpenBotToolRouter {
    * does a side thread that the person opened, or branched, and that takes no routine runs. A channel
    * task and a Slack or Telegram message also arrive as `user`, so a thread linked to either does not.
    */
-  #requestedByPerson(agentId: string, turnId: string, executionThreadId: string): boolean {
+  #requestedByPerson(agentId: string, turnId: string, executionThreadId: string, admins = false): boolean {
     const deliveries = this.#mailbox.findDeliveriesByTurn(agentId, turnId);
     return (
       deliveries.length > 0 &&
-      deliveries.every(({ delivery }) => delivery.sender.kind === "user" && !this.#remoteMember(delivery.messageId)) &&
+      deliveries.every(
+        ({ delivery }) => delivery.sender.kind === "user" && !this.#remoteMember(delivery.messageId, admins),
+      ) &&
       (!this.#conversation.isExecutionThread(executionThreadId) ||
         (this.#tasks.isPersonThread(agentId, executionThreadId) &&
           !this.#messaging.store.linkForThread(executionThreadId) &&
@@ -1730,10 +1738,26 @@ export class OpenBotToolRouter {
     );
   }
 
-  /** Whether a team member on another computer sent this message. */
-  #remoteMember(messageId: string): boolean {
+  /**
+   * Whether an owner or admin asked for the turn: in a channel task, the person whose request started
+   * it; in a chat, a user message of this computer's user or of a team member who administers the
+   * server. Every other rule of `#requestedByPerson` holds. A turn that no task runs is not asked.
+   */
+  #requestedByAdmin(agentId: string, turnId: string, executionThreadId: string) {
+    const channelId = this.#channels.store.channelForThread(executionThreadId);
+    if (channelId)
+      return this.#channels.requestedByAdmin(channelId, agentId, turnId).pipe(Effect.orElseSucceed(() => false));
+    return Effect.succeed(this.#requestedByPerson(agentId, turnId, executionThreadId, true));
+  }
+
+  /**
+   * Whether a team member on another computer sent this message. With `admins`, an owner or admin
+   * is not counted.
+   */
+  #remoteMember(messageId: string, admins = false): boolean {
     const member = this.#mailbox.senderMember(messageId);
-    return member !== undefined && (this.#channels.hooks.remotePerson?.(member.id) ?? false);
+    if (member === undefined || !(this.#channels.hooks.remotePerson?.(member.id) ?? false)) return false;
+    return !(admins && (this.#channels.hooks.adminPerson?.(member.id) ?? false));
   }
 
   /** Whether a team member on another computer sent a message of this turn. */
