@@ -19,7 +19,11 @@ export const CHANNEL_TASK_CANCEL_CAPABILITY = "channel-task-cancel-v1";
  */
 export const SIGNED_OUT_CHANNEL_MEMBER_ID = "local";
 export const CHANNEL_PARALLEL_LIMIT = 2;
-export const CHANNEL_ASSIGNMENT_LIMIT = 8;
+/**
+ * The automatic assignments one root request may start before the task tree pauses. Upstream sets 8;
+ * this fork has no cap, so `assignmentCount >= CHANNEL_ASSIGNMENT_LIMIT` never holds. Set a number to restore it.
+ */
+export const CHANNEL_ASSIGNMENT_LIMIT = Number.POSITIVE_INFINITY;
 
 export interface ChannelMember {
   agentId: string;

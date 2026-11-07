@@ -43,6 +43,7 @@ import type {
 } from "@openbot/contracts/ipc";
 import {
   type AgentAccessLevel,
+  canAdministerServer,
   conversationMessageSender,
   DEFAULT_REMOTE_CONTROL_POLICY,
   isAvatarColor,
@@ -2157,6 +2158,13 @@ export class HostService extends EventEmitter<HostEvents> {
       // Signed out: the person is a team member or nobody this computer knows.
       return true;
     }
+  }
+
+  /** Whether `personId` is this computer's user or an enabled team member who owns or administers the server. */
+  channelPersonIsAdmin(personId: string): boolean {
+    if (!this.channelPersonIsRemote(personId)) return true;
+    const member = this.#options.store.getMember(personId);
+    return !!member && !member.disabled && canAdministerServer(member.role);
   }
 
   /** The channel list as the host user reads it, as the IPC list does. Empty without channels. */

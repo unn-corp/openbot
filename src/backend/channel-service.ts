@@ -121,6 +121,11 @@ export interface ChannelHooks {
   personAgentLevel?(personId: string, agentId: string): AgentAccessLevel;
   /** Whether the person who asked uses a remote client, which has only the released routine schedules. */
   remotePerson?(personId: string): boolean;
+  /**
+   * Whether the person who asked is an owner or admin of the server, so their request may change a
+   * workflow. Omitted, only this computer's user is one.
+   */
+  adminPerson?(personId: string): boolean;
   /** The schedule routines of the channels, for the routine tools. Omitted, those tools fail. */
   routines?: ChannelRoutineToolPort;
   error(error: unknown): void;
@@ -3103,6 +3108,24 @@ export class ChannelService {
     const { task, tasks } = yield* this.#runningTask(channelId, agentId, turnId);
     const person = this.#requester(channelId, task, tasks);
     return person !== null && !(this.hooks.remotePerson?.(person.id) ?? false);
+  });
+
+  /**
+   * Whether an owner or admin made the request that started the agent's running task in this turn:
+   * this computer's user, or a team member whose role administers the server. A routine run and an
+   * agent's request are refused, as for `requestedByLocalPerson`.
+   */
+  readonly requestedByAdmin = Effect.fn("ChannelService.requestedByAdmin")(function* (
+    this: ChannelService,
+    channelId: string,
+    agentId: string,
+    turnId: string,
+  ) {
+    const { task, tasks } = yield* this.#runningTask(channelId, agentId, turnId);
+    const person = this.#requester(channelId, task, tasks);
+    if (person === null) return false;
+    if (!(this.hooks.remotePerson?.(person.id) ?? false)) return true;
+    return this.hooks.adminPerson?.(person.id) ?? false;
   });
 
   readonly tool = Effect.fn("ChannelService.tool")(function* (
