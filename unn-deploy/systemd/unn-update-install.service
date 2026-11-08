@@ -1,0 +1,6 @@
+[Unit]
+Description=Ask for the install of a staged, patched OpenBot release
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/unn-openbot/unn-update install-window

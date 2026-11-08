@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# unn-update: keeps the self-hosted UNN OpenBot server on the newest upstream release WITH the UNN
+# patch (unn.patch: no assignment cap, admins can edit workflows from chats and channels).
+#
+#   unn-update stage           Runs the upstream `openbot-hosted-update stage` (download, checksum,
+#                              packages, stage), then replaces the staged app.asar with one that is
+#                              rebuilt from the upstream tag plus unn.patch. The staged release never
+#                              applies unpatched: staged.ready is removed until the patch is in.
+#   unn-update request         What openbot-update-request.service runs (the Update button in the app
+#                              and the nightly window). Stages, then, for an install, snapshots the
+#                              data, applies, health-checks, and rolls back on failure.
+#   unn-update install-window  Nightly timer. Asks for the install when a patched release is staged.
+#   unn-update status          Prints the last lines of the status log.
+#
+# Controls: touch /var/lib/unn-update/hold to pause everything. Remove a version from
+# /var/lib/unn-update/failed to retry it after the patch was fixed.
+set -euo pipefail
+
+INSTALL=/opt/OpenBot
+HOSTED=$INSTALL/hosted/openbot-hosted-update
+LIB=/usr/local/lib/unn-openbot
+STATE_DIR=/var/lib/unn-update
+WORK=$STATE_DIR/work
+BUILD_USER=unnbuild
+STATE=/run/openbot-update.state
+REQUESTS=/run/openbot
+RELEASES=https://github.com/nightly-labs/openbot/releases
+UPSTREAM_GIT=https://github.com/nightly-labs/openbot.git
+MARKER=requestedByAdmin
+# The files the release keeps outside the packed archive (electron-builder.yml asarUnpack).
+UNPACK='{**/out/main/agent-database-host.js,**/out/main/voice-transcription-host.js,**/out/main/voice-speech-host.js,**/node_modules/effect/**/*,**/node_modules/@koromix/koffi-*/**/*}'
+KEYRING=/srv/openbot-hosted
+DATA=$(readlink -f /var/lib/openbot 2>/dev/null || echo /var/lib/openbot)
+
+NEED_START=0
+KEEPER=
+on_exit() {
+  [ -z "$KEEPER" ] || kill "$KEEPER" 2>/dev/null || true
+  [ "$NEED_START" -eq 0 ] || systemctl start --no-block openbot.service || true
+  [ -z "$KEEPER" ] || rm -f "$STATE"
+}
+trap on_exit EXIT
+
+log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$STATE_DIR/status.log" >&2; }
+fail() { log "FAIL: $*"; exit 1; }
+set_state() { printf '%s\n' "$*" >"$STATE.new"; mv -f "$STATE.new" "$STATE"; }
+version_of() { sed -n 's/^X-AppImage-Version=//p' "$1"/*.desktop 2>/dev/null | head -n 1; }
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -n 1)" = "$1" ]; }
+as_build() { runuser -u "$BUILD_USER" -- env HOME="$STATE_DIR/home" NPM_CONFIG_USERCONFIG=/dev/null "$@"; }
+is_failed() { grep -qxF "$1" "$STATE_DIR/failed" 2>/dev/null; }
+
+# A patched release is staged and complete.
+patched_ready() {
+  [ -f "$INSTALL/staged.ready" ] || return 1
+  local v; v=$(<"$INSTALL/staged.ready")
+  [ -n "$v" ] && [ "$(version_of "$INSTALL/staged")" = "$v" ] &&
+    grep -q "$MARKER" "$REL/resources/app.asar"
+}
+
+latest_version() {
+  curl --fail --location --proto '=https' --tlsv1.2 --silent --show-error --retry 3 \
+    "$RELEASES/latest/download/latest-linux.yml" | sed -n 's/^version: *//p' | head -n 1
+}
+
+ensure_bun() {
+  local want=$1 dir=$STATE_DIR/home/bun/$1
+  if [ ! -x "$dir/bun" ]; then
+    as_build bash -c "set -e; rm -rf '$dir.tmp'; mkdir -p '$dir.tmp' && cd '$dir.tmp' &&
+      curl -fsSL -o bun.zip 'https://github.com/oven-sh/bun/releases/download/bun-v$want/bun-linux-x64.zip' &&
+      unzip -q bun.zip && mv bun-linux-x64/bun '$dir.tmp/bun' && rm -rf bun.zip bun-linux-x64 &&
+      cd .. && rm -rf '$dir' && mv '$dir.tmp' '$dir'" || fail "could not install bun $want"
+  fi
+  echo "$dir/bun"
+}
+
+# Builds the patched app.asar for staged release $1 into $WORK/$1. Leaves new.asar(+.unpacked).
+build_patched() {
+  local v=$1 w=$WORK/$1 asar bunv bun REL=${2:-$INSTALL/staged}
+  rm -rf "$w"; install -d -o "$BUILD_USER" -m 0750 "$w" || fail "work dir"
+  log "building $v: clone"
+  as_build git clone --quiet --depth 1 --branch "v$v" "$UPSTREAM_GIT" "$w/src" || fail "clone v$v"
+  as_build git -C "$w/src" apply --check "$LIB/unn.patch" || fail "unn.patch does not apply to v$v"
+  as_build git -C "$w/src" apply "$LIB/unn.patch" || fail "unn.patch apply v$v"
+  bunv=$(sed -n 's/.*"packageManager": *"bun@\([0-9.]*\)".*/\1/p' "$w/src/package.json")
+  [ -n "$bunv" ] || fail "no packageManager bun version in v$v"
+  bun=$(ensure_bun "$bunv") || fail "bun $bunv unavailable"
+  log "building $v: install + build (bun $bunv)"
+  as_build bash -c "cd '$w/src' && '$bun' install --frozen-lockfile --ignore-scripts >/dev/null 2>&1 && '$bun' run build >/dev/null 2>&1" ||
+    fail "bun install/build failed for v$v"
+  asar=$w/src/node_modules/@electron/asar/bin/asar.js
+  [ -f "$asar" ] || fail "asar tool missing"
+  log "building $v: repack"
+  as_build node "$asar" extract "$REL/resources/app.asar" "$w/ex" || fail "extract official asar"
+  # Safety gate: the build must reproduce the official bundle except for the patched main bundle.
+  local d; d=$(diff -rq "$w/ex/out" "$w/src/out" || true)
+  [ "$d" = "Files $w/ex/out/main/index.js and $w/src/out/main/index.js differ" ] ||
+    fail "build differs from the official release in unexpected ways: $(echo "$d" | head -n 3 | tr '\n' ';')"
+  as_build cp "$w/src/out/main/index.js" "$w/ex/out/main/index.js" || fail "copy patched bundle"
+  as_build node "$asar" pack "$w/ex" "$w/new.asar" --unpack "$UNPACK" || fail "pack asar"
+  # Safety gates: same unpacked file set and archive entry count as the official one.
+  local a b
+  a=$(cd "$w/new.asar.unpacked" && find . -type f | sort | md5sum)
+  b=$(cd "$REL/resources/app.asar.unpacked" && find . -type f | sort | md5sum)
+  [ "$a" = "$b" ] || fail "unpacked file set differs from the official release"
+  [ "$(as_build node "$asar" list "$w/new.asar" | wc -l)" = "$(as_build node "$asar" list "$REL/resources/app.asar" | wc -l)" ] ||
+    fail "archive entry count differs from the official release"
+  grep -q "$MARKER" "$w/new.asar" || fail "patch marker missing in rebuilt asar"
+}
+
+# Rebuilds the installed version from its official AppImage and compares it with the installed
+# app.asar. Touches nothing under /opt/OpenBot. Proves that the pipeline reproduces what runs.
+selftest() {
+  local v; v=$(version_of "$INSTALL/app"); local t=$WORK/selftest-$v
+  rm -rf "$t"; install -d -o "$BUILD_USER" -m 0750 "$t"
+  as_build bash -c "cd '$t' && curl -fsSL -o OpenBot.AppImage '$RELEASES/download/v$v/OpenBot-$v-x86_64.AppImage' && chmod 700 OpenBot.AppImage && ./OpenBot.AppImage --appimage-extract >/dev/null" || fail "selftest download"
+  ( build_patched "$v" "$t/squashfs-root" ) || fail "selftest build"
+  if cmp -s "$WORK/$v/new.asar" "$INSTALL/app/resources/app.asar"; then log "selftest OK: rebuilt asar is byte-identical to the installed one"
+  else log "selftest: rebuilt asar differs from the installed one (sha $(sha256sum "$WORK/$v/new.asar" | cut -c1-12) vs $(sha256sum "$INSTALL/app/resources/app.asar" | cut -c1-12))"; fi
+  rm -rf "$t" "$WORK/$v"
+}
+
+stage() {
+  [ -e "$STATE_DIR/hold" ] && { log "hold file present; not staging"; return 0; }
+  local latest; latest=$(latest_version) || fail "cannot read the release manifest"
+  [[ $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "bad manifest version"
+  if is_failed "$latest"; then log "v$latest failed before; not retrying (see $STATE_DIR/failed)"; return 1; fi
+  local current; current=$(version_of "$INSTALL/app")
+  newer "$latest" "$current" || return 0
+  if patched_ready && [ "$(<"$INSTALL/staged.ready")" = "$latest" ]; then return 0; fi
+  log "new upstream release $latest (installed $current): staging"
+  "$HOSTED" stage || fail "upstream stage failed"
+  [ -f "$INSTALL/staged.ready" ] || { log "upstream staged nothing"; return 0; }
+  local v; v=$(<"$INSTALL/staged.ready")
+  patched_ready && return 0
+  # From here nothing may apply the unpatched release.
+  rm -f "$INSTALL/staged.ready"
+  if ! ( build_patched "$v" ); then
+    rm -rf "$INSTALL/staged" "$WORK/$v"
+    echo "$v" >>"$STATE_DIR/failed"
+    fail "patched build of $v failed; the unpatched release was discarded"
+  fi
+  local w=$WORK/$v s=$INSTALL/staged/resources
+  cp "$w/new.asar" "$s/app.asar"
+  rm -rf "$s/app.asar.unpacked"; cp -a "$w/new.asar.unpacked" "$s/app.asar.unpacked"
+  chown -R root:root "$s/app.asar" "$s/app.asar.unpacked"
+  chmod -R u+rwX,go=rX "$s/app.asar" "$s/app.asar.unpacked"
+  echo "$v" >"$INSTALL/staged.ready"
+  patched_ready || fail "staged release failed the final check"
+  rm -rf "$w"
+  log "patched $v is staged"
+}
+
+health_ok() {
+  local want=$1 i out
+  for i in $(seq 1 48); do
+    sleep 5
+    if systemctl is-active --quiet openbot.service; then
+      out=$(openbot status 2>&1 || true)
+      if grep -q "OpenBot $want" <<<"$out" && grep -q "(online)" <<<"$out"; then return 0; fi
+    fi
+  done
+  return 1
+}
+
+rollback() {
+  local b=$1
+  log "ROLLING BACK to the snapshot"
+  systemctl stop openbot.service || true
+  rm -rf "$INSTALL/.applying" "$INSTALL/staged" "$INSTALL/staged.ready"
+  rm -rf "$INSTALL/app" && cp -a "$b/app" "$INSTALL/app"
+  cp -a "$b/hosted/." "$INSTALL/hosted/"
+  rsync -a --delete "$b/home/" "$DATA/"
+  rsync -a --delete "$b/keyring/" "$KEYRING/"
+  systemctl start openbot.service
+}
+
+do_install() {
+  local v; v=$(<"$INSTALL/staged.ready")
+  local b=$STATE_DIR/rollback need free
+  need=$(( $(du -sk "$DATA" | cut -f1) + $(du -sk "$INSTALL/app" | cut -f1) + 2000000 ))
+  free=$(df -Pk "$STATE_DIR" | awk 'NR==2{print $4}')
+  [ "$free" -gt "$need" ] || fail "not enough disk for a rollback snapshot; install skipped"
+  log "installing $v: stopping OpenBot and taking a snapshot"
+  NEED_START=1
+  systemctl stop openbot.service || fail "could not stop OpenBot"
+  rm -rf "$b"; mkdir -p "$b"
+  cp -a "$DATA" "$b/home" && cp -a "$KEYRING" "$b/keyring" && cp -a "$INSTALL/app" "$b/app" && cp -a "$INSTALL/hosted" "$b/hosted" ||
+    { rm -rf "$b"; fail "snapshot failed; install skipped"; }
+  if "$HOSTED" apply && systemctl start openbot.service && health_ok "$v"; then
+    rm -rf "$b"
+    log "OpenBot $v is installed and healthy; snapshot removed"
+    return 0
+  fi
+  log "install of $v did not come up healthy"
+  rollback "$b" || { log "ROLLBACK FAILED; snapshot kept at $b"; return 1; }
+  echo "$v" >>"$STATE_DIR/failed"
+  if health_ok "$(version_of "$INSTALL/app")"; then
+    rm -rf "$b"; log "rolled back; previous version is online; $v marked failed"
+  else
+    log "rolled back but the old version is not healthy; snapshot kept at $b"
+  fi
+  return 1
+}
+
+request() {
+  local install=0 status=0
+  [ -e "$REQUESTS/update-install" ] || [ -L "$REQUESTS/update-install" ] && install=1
+  if [ "$install" -eq 1 ]; then set_state installing; else set_state waiting; fi
+  rm -f -- "$REQUESTS/update-stage" "$REQUESTS/update-install"
+  (while sleep 5; do touch "$STATE"; done) >/dev/null 2>&1 8>&- &
+  KEEPER=$!
+  stage || status=$?
+  if [ "$install" -eq 1 ] && [ "$status" -eq 0 ]; then
+    if patched_ready && newer "$(<"$INSTALL/staged.ready")" "$(version_of "$INSTALL/app")"; then
+      do_install || status=$?
+    else
+      log "install requested but no patched release is staged"
+    fi
+  fi
+  return "$status"
+}
+
+install_window() {
+  [ -e "$STATE_DIR/hold" ] && { log "hold file present; skipping the nightly install"; return 0; }
+  if patched_ready && newer "$(<"$INSTALL/staged.ready")" "$(version_of "$INSTALL/app")"; then
+    log "nightly window: requesting the install of $(<"$INSTALL/staged.ready")"
+    touch "$REQUESTS/update-install"
+  fi
+}
+
+[ "$(id -u)" -eq 0 ] || { echo "Run this as root." >&2; exit 1; }
+install -d -m 0755 "$STATE_DIR" "$WORK"
+chown "$BUILD_USER" "$WORK" 2>/dev/null || true
+if [ "${1:-}" = status ]; then tail -n "${2:-30}" "$STATE_DIR/status.log"; exit 0; fi
+exec 8>/run/unn-update.lock
+flock 8
+case ${1:-} in
+  stage) stage ;;
+  request) request ;;
+  install-window) install_window ;;
+  selftest) selftest ;;
+  *) echo "usage: $0 stage|request|install-window|selftest|status" >&2; exit 2 ;;
+esac
