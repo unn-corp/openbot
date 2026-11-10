@@ -34,7 +34,11 @@ DATA=$(readlink -f /var/lib/openbot 2>/dev/null || echo /var/lib/openbot)
 
 NEED_START=0
 KEEPER=
+# 1 while a release is staged but not yet known to be patched: any exit then removes staged.ready,
+# so an unpatched release can never be applied after a crash.
+UNSAFE=0
 on_exit() {
+  [ "$UNSAFE" -eq 0 ] || rm -f "$INSTALL/staged.ready"
   [ -z "$KEEPER" ] || kill "$KEEPER" 2>/dev/null || true
   [ "$NEED_START" -eq 0 ] || systemctl start --no-block openbot.service || true
   [ -z "$KEEPER" ] || rm -f "$STATE"
@@ -54,7 +58,7 @@ patched_ready() {
   [ -f "$INSTALL/staged.ready" ] || return 1
   local v; v=$(<"$INSTALL/staged.ready")
   [ -n "$v" ] && [ "$(version_of "$INSTALL/staged")" = "$v" ] &&
-    grep -q "$MARKER" "$REL/resources/app.asar"
+    grep -q "$MARKER" "$INSTALL/staged/resources/app.asar"
 }
 
 latest_version() {
@@ -131,9 +135,11 @@ stage() {
   "$HOSTED" stage || fail "upstream stage failed"
   [ -f "$INSTALL/staged.ready" ] || { log "upstream staged nothing"; return 0; }
   local v; v=$(<"$INSTALL/staged.ready")
-  patched_ready && return 0
   # From here nothing may apply the unpatched release.
+  UNSAFE=1
   rm -f "$INSTALL/staged.ready"
+  [ -f "$INSTALL/staged/resources/app.asar" ] && grep -q "$MARKER" "$INSTALL/staged/resources/app.asar" &&
+    { echo "$v" >"$INSTALL/staged.ready"; UNSAFE=0; return 0; }
   if ! ( build_patched "$v" ); then
     rm -rf "$INSTALL/staged" "$WORK/$v"
     echo "$v" >>"$STATE_DIR/failed"
@@ -146,6 +152,7 @@ stage() {
   chmod -R u+rwX,go=rX "$s/app.asar" "$s/app.asar.unpacked"
   echo "$v" >"$INSTALL/staged.ready"
   patched_ready || fail "staged release failed the final check"
+  UNSAFE=0
   rm -rf "$w"
   log "patched $v is staged"
 }
