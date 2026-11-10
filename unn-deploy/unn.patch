@@ -1,8 +1,8 @@
 diff --git a/docs/architecture/channels-and-messaging.md b/docs/architecture/channels-and-messaging.md
-index 68e2f6629..d0273ae0a 100644
+index e4c648d67..62c37a0e0 100644
 --- a/docs/architecture/channels-and-messaging.md
 +++ b/docs/architecture/channels-and-messaging.md
-@@ -218,8 +218,8 @@ them. A lead change does not move a task that already has an owner. The member p
+@@ -265,8 +265,8 @@ them. A lead change does not move a task that already has an owner. The member p
  Channel tools retrieve history, assign a child task, transfer ownership, and report results. The
  runtime supplies channel and caller identity. A child keeps its parent owner; a transfer changes it.
  Only assignments and awaited results start turns. Completed child results are combined before the
@@ -14,7 +14,7 @@ index 68e2f6629..d0273ae0a 100644
  An agent can also give work to a channel from another conversation, such as its direct chat with
  the user. `list_channels` lists the open channels with their lead and members.
 diff --git a/packages/contracts/src/ipc-chat-channels.ts b/packages/contracts/src/ipc-chat-channels.ts
-index e206938a0..dbd5ab99c 100644
+index ca26cb266..3272a7257 100644
 --- a/packages/contracts/src/ipc-chat-channels.ts
 +++ b/packages/contracts/src/ipc-chat-channels.ts
 @@ -19,7 +19,11 @@ export const CHANNEL_TASK_CANCEL_CAPABILITY = "channel-task-cancel-v1";
@@ -27,14 +27,14 @@ index e206938a0..dbd5ab99c 100644
 + * this fork has no cap, so `assignmentCount >= CHANNEL_ASSIGNMENT_LIMIT` never holds. Set a number to restore it.
 + */
 +export const CHANNEL_ASSIGNMENT_LIMIT = Number.POSITIVE_INFINITY;
- 
- export interface ChannelMember {
-   agentId: string;
+ /**
+  * The reason a run stops at `CHANNEL_ASSIGNMENT_LIMIT`. Saved tasks and every host version carry this
+  * exact English, so a screen compares it to show its own text. Do not change it.
 diff --git a/src/backend/agent-service.ts b/src/backend/agent-service.ts
-index 9a1514b3a..7baf43a65 100644
+index 86e62d3eb..c0bd5aa51 100644
 --- a/src/backend/agent-service.ts
 +++ b/src/backend/agent-service.ts
-@@ -402,6 +402,7 @@ export interface AgentServiceOptions {
+@@ -447,6 +447,7 @@ export interface AgentServiceOptions {
    channelPersonAgentLevel?: (personId: string, agentId: string) => AgentAccessLevel;
    /** Whether that person uses a remote client, which has only the released routine schedules. Omitted, no. */
    channelRemotePerson?: (personId: string) => boolean;
@@ -42,7 +42,7 @@ index 9a1514b3a..7baf43a65 100644
    deleteWithRevokedApproval?: (
      agentId: string,
      remove: () => Effect.Effect<void, AgentRemovalFailed>,
-@@ -1340,6 +1341,7 @@ export class AgentService extends EventEmitter<AgentServiceEvents> {
+@@ -1442,6 +1443,7 @@ export class AgentService extends EventEmitter<AgentServiceEvents> {
        memoriesChanged: (channelId) => this.#emit({ type: "channel-memories-changed", channelId }),
        ...(options.channelPersonAgentLevel ? { personAgentLevel: options.channelPersonAgentLevel } : {}),
        ...(options.channelRemotePerson ? { remotePerson: options.channelRemotePerson } : {}),
@@ -51,10 +51,10 @@ index 9a1514b3a..7baf43a65 100644
          list: (channelId) => this.#channelRoutines.list(channelId),
          create: (input) => this.#channelRoutines.create(input),
 diff --git a/src/backend/agent/openbot-tool-router.ts b/src/backend/agent/openbot-tool-router.ts
-index 51a3f1beb..5580b3f13 100644
+index 78a0663e7..a9de8f2e6 100644
 --- a/src/backend/agent/openbot-tool-router.ts
 +++ b/src/backend/agent/openbot-tool-router.ts
-@@ -1289,16 +1289,22 @@ export class OpenBotToolRouter {
+@@ -1768,16 +1768,22 @@ export class OpenBotToolRouter {
      );
      if (flowResult) return flowResult;
  
@@ -79,7 +79,7 @@ index 51a3f1beb..5580b3f13 100644
        return openBotToolFailure("A team member's message cannot read workflows. Ask the member to use Workflows.");
      // The agent list is read only for a workflow tool, not on each OpenBot tool call.
      if (WORKFLOW_TOOL_NAMES.has(params.tool)) {
-@@ -1718,11 +1724,13 @@ export class OpenBotToolRouter {
+@@ -2245,11 +2251,13 @@ export class OpenBotToolRouter {
     * does a side thread that the person opened, or branched, and that takes no routine runs. A channel
     * task and a Slack or Telegram message also arrive as `user`, so a thread linked to either does not.
     */
@@ -95,7 +95,7 @@ index 51a3f1beb..5580b3f13 100644
        (!this.#conversation.isExecutionThread(executionThreadId) ||
          (this.#tasks.isPersonThread(agentId, executionThreadId) &&
            !this.#messaging.store.linkForThread(executionThreadId) &&
-@@ -1730,10 +1738,26 @@ export class OpenBotToolRouter {
+@@ -2257,10 +2265,26 @@ export class OpenBotToolRouter {
      );
    }
  
@@ -126,10 +126,10 @@ index 51a3f1beb..5580b3f13 100644
  
    /** Whether a team member on another computer sent a message of this turn. */
 diff --git a/src/backend/channel-service.ts b/src/backend/channel-service.ts
-index cfe0229e1..b8d3e6f30 100644
+index 7d2a9440c..0400d0ac8 100644
 --- a/src/backend/channel-service.ts
 +++ b/src/backend/channel-service.ts
-@@ -122,6 +122,11 @@ export interface ChannelHooks {
+@@ -128,6 +128,11 @@ export interface ChannelHooks {
    personAgentLevel?(personId: string, agentId: string): AgentAccessLevel;
    /** Whether the person who asked uses a remote client, which has only the released routine schedules. */
    remotePerson?(personId: string): boolean;
@@ -141,7 +141,7 @@ index cfe0229e1..b8d3e6f30 100644
    /** The schedule routines of the channels, for the routine tools. Omitted, those tools fail. */
    routines?: ChannelRoutineToolPort;
    error(error: unknown): void;
-@@ -3149,6 +3154,24 @@ export class ChannelService {
+@@ -3266,6 +3271,24 @@ export class ChannelService {
      return person !== null && !(this.hooks.remotePerson?.(person.id) ?? false);
    });
  
@@ -167,10 +167,10 @@ index cfe0229e1..b8d3e6f30 100644
      this: ChannelService,
      channelId: string,
 diff --git a/src/main/application-services.ts b/src/main/application-services.ts
-index b71af1827..630b93437 100644
+index 4b1e26470..930f328a6 100644
 --- a/src/main/application-services.ts
 +++ b/src/main/application-services.ts
-@@ -2056,6 +2056,7 @@ export async function createApplicationServices({
+@@ -2187,6 +2187,7 @@ export async function createApplicationServices({
      // `host` is built later, after the agent service; a channel tool reads it when it runs.
      channelPersonAgentLevel: (personId, agentId) => host.channelPersonAgentLevel(personId, agentId),
      channelRemotePerson: (personId) => host.channelPersonIsRemote(personId),
@@ -179,7 +179,7 @@ index b71af1827..630b93437 100644
      // the new graph. `workflowStore` is built later, after the agent service.
      deleteWithRevokedApproval: (agentId, remove) =>
 diff --git a/src/main/host-service.ts b/src/main/host-service.ts
-index 9d7dab879..8ea397352 100644
+index f0b30dd67..a5148c5af 100644
 --- a/src/main/host-service.ts
 +++ b/src/main/host-service.ts
 @@ -43,6 +43,7 @@ import type {
@@ -190,7 +190,7 @@ index 9d7dab879..8ea397352 100644
    conversationMessageSender,
    DEFAULT_REMOTE_CONTROL_POLICY,
    isAvatarColor,
-@@ -2169,6 +2170,13 @@ export class HostService extends EventEmitter<HostEvents> {
+@@ -2205,6 +2206,13 @@ export class HostService extends EventEmitter<HostEvents> {
      }
    }
  
