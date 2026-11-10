@@ -340,6 +340,13 @@ export interface AgentProfile {
 }
 
 /** The agent fields that the composer, the queue, rich text and the browser dock read. */
+/** A server member that can receive a mention. IDs are scoped to this server. */
+export interface ComposerUser {
+  id: string;
+  name: string;
+  username: string;
+}
+
 export type ComposerAgent = Pick<
   AgentProfile,
   "id" | "name" | "title" | "description" | "avatarSeed" | "avatarHue" | "avatarColor" | "avatarUrl"

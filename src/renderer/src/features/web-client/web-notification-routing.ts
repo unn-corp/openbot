@@ -13,7 +13,7 @@ import {
   agentNotificationLevel,
   notificationRequestKey,
 } from "@openbot/team-client/agent-notifications";
-import { channelReplyNotifications } from "@openbot/team-client/channel-notifications";
+import { ChannelMentionNotifications, channelReplyNotifications } from "@openbot/team-client/channel-notifications";
 import type { TextValue } from "@openbot/ui/text";
 import { createSignal, onCleanup, untrack } from "solid-js";
 import { startActionSounds } from "../../action-sounds";
@@ -47,6 +47,11 @@ export function createWebNotificationRouting(options: {
   /** The channel of a thread on the open host, from its channel list, or null. */
   channelForThread: (hostId: string, threadId: string) => AgentNotificationChannel | null;
   /** The user's own level for each agent of a host. Absent, the server level applies to each agent. */
+  memberId: () => string | null;
+  readChannel: (
+    hostId: string,
+    input: import("@openbot/contracts/ipc").ChannelReadInput,
+  ) => Promise<import("@openbot/contracts/ipc").ChannelPage>;
   readAgentLevels?: ((hostId: string) => Promise<AgentNotificationLevelsSnapshot>) | undefined;
   /** The agents of a host that the user hid. Such an agent notifies only when it waits for the user. */
   hiddenAgentIds: (hostId: string) => ReadonlySet<string>;
@@ -82,6 +87,7 @@ export function createWebNotificationRouting(options: {
   }
   /** The requests whose notification waits for the levels. An answer on any device removes its key. */
   const waitingRequests = new Set<string>();
+  const mentionTrackers = new Map<string, { readerId: string; tracker: ChannelMentionNotifications }>();
 
   async function levelsOf(hostId: string): Promise<ReadonlyMap<string, ServerNotificationLevel> | null> {
     const read = options.readAgentLevels;
@@ -141,17 +147,43 @@ export function createWebNotificationRouting(options: {
     });
   }
   /** The replies that a new channel list of the open host shows. The first list is the baseline. */
-  function notifyChannelReplies(hostId: string, previous: ChannelSummary[] | null, next: ChannelSummary[]): void {
-    const { muted, level } = untrack(() => notifications.state(hostId));
-    if (muted) return;
-    const replies = channelReplyNotifications(previous, next, {
-      agents: untrack(() => workspace.state.agents),
-      translate: options.t,
-      level,
-      // As for an agent reply, the web client shows no preview.
-      redact: null,
-    });
-    showWebChannelNotifications({ hostId, replies, onOpen: (channelId) => options.onOpenChannel(hostId, channelId) });
+  async function notifyChannelReplies(
+    hostId: string,
+    previous: ChannelSummary[] | null,
+    next: ChannelSummary[],
+  ): Promise<void> {
+    const readerId = options.memberId();
+    if (!readerId) return;
+    let tracking = mentionTrackers.get(hostId);
+    if (!tracking || tracking.readerId !== readerId) {
+      tracking = { readerId, tracker: new ChannelMentionNotifications() };
+      mentionTrackers.set(hostId, tracking);
+    }
+    try {
+      const mentions = await tracking.tracker.read(next, {
+        readerId,
+        readPage: (input) => options.readChannel(hostId, input),
+        translate: options.t,
+        redact: null,
+      });
+      const { muted, level } = untrack(() => notifications.state(hostId));
+      if (muted || level === "nothing" || options.memberId() !== readerId || workspace.state.host?.hostId !== hostId)
+        return;
+      const mentionedChannels = new Set(mentions.map((mention) => mention.channelId));
+      const replies = channelReplyNotifications(previous, next, {
+        agents: untrack(() => workspace.state.agents),
+        translate: options.t,
+        level,
+        redact: null,
+      }).filter((reply) => !mentionedChannels.has(reply.channelId));
+      showWebChannelNotifications({
+        hostId,
+        replies: [...mentions, ...replies],
+        onOpen: (channelId) => options.onOpenChannel(hostId, channelId),
+      });
+    } catch {
+      // A disconnected host is retried on its next channel list. No message is marked read.
+    }
   }
   function setMuted(hostId: string, muted: boolean, durationMs?: number) {
     if (!muted) requestWebNotificationPermission(true);

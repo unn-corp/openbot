@@ -63,6 +63,7 @@ import {
   AGENT_HIDDEN_WORK_CAPABILITY,
   AGENT_WELCOME_CAPABILITY,
   TEAM_AGENT_CREATE_MODEL_CAPABILITY,
+  USER_MENTIONS_CAPABILITY,
 } from "@openbot/contracts/team-protocol/current";
 import { DISCORD_ACCESS_CAPABILITY } from "@openbot/contracts/team-protocol/discord-access-v1";
 import { EVENTS_CAPABILITY } from "@openbot/contracts/team-protocol/events-v1";
@@ -807,6 +808,13 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
             threadId,
           )
         : null,
+    memberId: () => workspace.state.memberId,
+    readChannel: (hostId, input) => {
+      if (workspace.state.host?.hostId !== hostId) return Promise.reject(new Error("The active server changed."));
+      const api = workspace.runtime.channels;
+      if (!api) return Promise.reject(new Error("Channels are unavailable."));
+      return api.readChannel(input);
+    },
     readAgentLevels: workspace.runtime.listAgentNotificationLevels,
     // Only the open host has a list of hidden agents. A host that stops a hidden agent keeps its level.
     hiddenAgentIds: (hostId) =>
@@ -1889,7 +1897,7 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
       const previous = channelBaseline?.scope === scope ? channelBaseline.channels : null;
       channelBaseline = { scope, channels: list };
       if (hostId) {
-        notifyChannelReplies(hostId, previous, list);
+        void notifyChannelReplies(hostId, previous, list);
         saveRemoteFrameChannels(props.accountId, hostId, list);
       }
     },
@@ -3646,6 +3654,16 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
                         agent={undefined}
                         agents={workspace.profiles()}
                         mentionAgents={channelView.mentionAgents()}
+                        mentionUsers={(workspace.state.presence?.members ?? [])
+                          .filter(
+                            (member) =>
+                              !member.disabled && workspace.state.capabilities.includes(USER_MENTIONS_CAPABILITY),
+                          )
+                          .map((member) => ({
+                            id: member.id,
+                            name: member.name ?? member.username,
+                            username: member.username,
+                          }))}
                         modelOptions={[]}
                         messages={channelView.messages()}
                         unreadCount={channelView.unreadCount()}

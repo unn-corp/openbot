@@ -900,6 +900,15 @@ export class ChannelService {
         const open = allTasks.filter((task) => !terminal(task));
         const eligible = this.eligibleMembers(current);
         const recipients = this.#recipients(eligible, text, command.recipientAgentId);
+        const address = leadingAddress(text);
+        // A message addressed only to people is a post, not an agent assignment.
+        if (address.users.length && !recipients.length && !address.everyone) {
+          const message = this.message(current.id, null, { kind: "member", ...actor }, text, id);
+          message.message.replyToMessageId = command.replyToMessageId;
+          if (committed) message.message.attachments = committed.attachments;
+          const result = yield* channelSync(() => this.store.update(current, { messages: [message] }, operationId));
+          return { current, continued: [], affected: [], resumed: [], message, result, tasks: [] };
+        }
         const continues =
           /^(?:also|instead|actually|please change|change that|correction|continue|resume|go on|keep going|yes|no|use that|make it)\b/iu.test(
             text.trim(),

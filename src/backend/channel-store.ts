@@ -1012,6 +1012,16 @@ export class ChannelStore {
     }
   }
 
+  /** Whether this message is beyond the member's committed channel read position. */
+  isUnread(channelId: string, memberId: string, sequence: number): boolean {
+    const row = databaseRow(
+      this.database.connection
+        .prepare("SELECT through_sequence FROM projection_channel_reads WHERE channel_id = ? AND member_id = ?")
+        .get(channelId, memberId),
+    );
+    return sequence > (row ? requiredNumberColumn(row, "through_sequence") : 0);
+  }
+
   markRead(channelId: string, memberId: string, throughSequence: number, operationId: string): Channel {
     const maximum = this.page(channelId).throughSequence;
     if (throughSequence > maximum) throw new Error("The read position exceeds the channel history.");

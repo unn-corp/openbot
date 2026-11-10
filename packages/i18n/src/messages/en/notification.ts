@@ -1,6 +1,7 @@
 import { defineMessages } from "../../message";
 
 export const messages = defineMessages("notification", {
+  "notification.userMention": "Mentioned you.",
   // Desktop notifications, raised by the main process while the window may be closed, and browser
   // notifications, raised by the web client while its tab is open.
   "notification.needsInput": "Needs your input.",

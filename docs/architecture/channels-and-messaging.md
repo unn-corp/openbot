@@ -67,7 +67,7 @@ parts to other agents thus notifies once, at its end. The desktop reads the agen
 notification only when a reply is new, and it reads no channel list for a server whose replies
 cannot notify. The title of a prompt, an approval or
 a takeover on a channel thread names the agent and the channel (`notification.channelTitle`), and a
-click opens the channel. The phone gets no channel reply notification. For a phone that sends
+click opens the channel. The phone gets no general channel reply notification; explicit user mentions use the path below. For a phone that sends
 `channel-attention-v1`, the host names the channel in the title of a prompt, an approval or a
 takeover on a channel thread (`PushNotificationService` reads `HostService.channelForThread`), and a
 tap opens the channel. An older phone gets the agent name as the title, as before.
@@ -886,3 +886,31 @@ image shows its own thumbnail, every other file shows the file icon, and the mes
 a file in the share sheet. The thumbnail reads the attachment through the query key the chat uses,
 so a file already read in a message is not fetched again. The editor changes the text, removes the
 files the message already has, and adds new ones.
+
+### User mentions
+
+The channel composer's `@` list includes enabled server members, including offline members, when
+the host advertises `user-mentions-v1` (protocol 9 only). Older hosts keep the agent picker.
+A selected person is stored as `@[Name](user:memberId)` (URI-encoded when required), so a renamed
+member or two people with the same name cannot redirect a notification. A message addressed only
+to people is stored without an agent task. Mixing person and agent tags still addresses the named
+agents. A mention elsewhere in a message does not change agent routing.
+
+Desktop and browser clients read full channel pages after channel changes, using the existing
+read route. They notify the authenticated member whose ID the tag names, after a streamed message
+finishes, including tags beyond the sidebar preview. Each reader keeps a sequence baseline and
+pending streaming messages; initial history, self-mentions, archived channels and duplicate updates
+stay quiet. Clicks open the channel. Muting a server or choosing no notifications prevents alerts;
+focused windows follow the existing notification policy. Preview text uses the desktop redactor
+and preview switch; the browser shows a fixed message.
+
+The host also tracks mentions for registered iOS and Android phones that advertise
+`user-mentions-v1`. It uses the same permitted channel history, checks the member's active status,
+read cursor and current channel visibility again before sending, then sends through the existing
+encrypted relay. The server notification level and mute apply; mentions also notify at "needs me".
+A recently used desktop keeps the phone quiet. A phone on screen holds mentions until it goes away
+or disconnects, and receives only those still unread. A Live Activity does not replace a user
+mention. Native notification data carries the channel ID, including posts without an agent thread,
+so foreground suppression, grouping and taps address the channel. Old phone registrations receive
+no mention payload. Host restarts set a baseline rather than replay old mentions.
+Older clients keep the tag as readable message text; no released Team API codec changes.

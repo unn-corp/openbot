@@ -1921,6 +1921,22 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
     });
   }
 
+  /** The authenticated member of this joined server, resolved from its saved login. */
+  notificationMemberId(serverId: string): string | null {
+    const username = this.#store.servers
+      .find((server) => server.id === serverId)
+      ?.username.trim()
+      .toLowerCase();
+    if (!username) return null;
+    return (
+      this.getPresence(serverId).members.find(
+        (member) =>
+          !member.disabled &&
+          (member.username.trim().toLowerCase() === username || member.email?.trim().toLowerCase() === username),
+      )?.id ?? null
+    );
+  }
+
   getPresence(serverId = this.#store.activeServerId): TeamPresenceSnapshot {
     return this.#withMemberChatColors(serverId, this.#presence.get(serverId));
   }
