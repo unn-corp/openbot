@@ -3,7 +3,14 @@ import type { DraftAttachment } from "@openbot/contracts/ipc";
 import { referenceChipClasses } from "@openbot/ui/reference-chip";
 import { usesTouchLayout } from "@openbot/ui/utils";
 import { createStaticAvatarSvg } from "../../bloub-avatar";
-import type { ComposerAgent, ComposerBrowserTab, ComposerMcpServer, ComposerSkill, ComposerThread } from "../../data";
+import type {
+  ComposerAgent,
+  ComposerBrowserTab,
+  ComposerMcpServer,
+  ComposerSkill,
+  ComposerThread,
+  ComposerUser,
+} from "../../data";
 import { currentText } from "../../text";
 import { appendAttachmentReferenceVisual } from "./AttachmentReference";
 import { tabTitle } from "./composer-picker";
@@ -104,6 +111,19 @@ export function syncAttachmentTokens(
     else if (attachment.name !== token.dataset.attachmentReferenceName)
       token.replaceWith(createAttachmentToken(attachment, actions));
   }
+}
+
+export function createUserMentionToken(user: ComposerUser): HTMLSpanElement {
+  const token = document.createElement("span");
+  token.className = `composer-mention-token ${referenceChipClasses.root}`;
+  token.contentEditable = "false";
+  token.dataset.kind = "user";
+  token.dataset.mentionId = user.id;
+  token.dataset.mentionName = user.name;
+  token.title = user.username;
+  token.textContent = `@${user.name}`;
+  token.setAttribute("aria-label", currentText().t("composer.picker.option.user", { name: user.name }));
+  return token;
 }
 
 export function createMentionToken(agent: ComposerAgent): HTMLSpanElement {
@@ -414,6 +434,7 @@ export function syncSkillTokens(editor: HTMLDivElement, skills: ComposerSkill[])
 
 /** What the editor draws its tags from. */
 export interface EditorTagSources {
+  users?: ComposerUser[];
   agents: ComposerAgent[];
   skills: ComposerSkill[];
   mcpServers: ComposerMcpServer[];
@@ -437,6 +458,12 @@ export function renderEditorValue(
     const semanticReference = chatTagReferences(match[0])[0];
     const name = semanticReference?.name ?? match[1] ?? "Agent";
     const target = semanticReference ? `${semanticReference.kind}:${semanticReference.id}` : (match[2] ?? "");
+    if (semanticReference?.kind === "user") {
+      const user = sources.users?.find((candidate) => candidate.id === semanticReference.id);
+      editor.append(createUserMentionToken(user ?? { id: semanticReference.id, name, username: name }));
+      cursor = index + match[0].length;
+      continue;
+    }
     if (target.startsWith("attachment:")) {
       const id = target.slice("attachment:".length);
       const attachment = attachments.find((candidate) => candidate.id === id);

@@ -210,6 +210,7 @@ export interface ConversationProps {
    * messages, so the desktop leaves it out; the timeline still names it from `agents`.
    */
   mentionAgents?: AgentProfile[] | undefined;
+  mentionUsers?: import("@openbot/ui/data").ComposerUser[] | undefined;
   availableRoutineIds?: readonly string[] | undefined;
   /** The agent's routines, for the chat card of a routine the agent created or changed. */
   routines?: readonly RoutineFields[] | undefined;

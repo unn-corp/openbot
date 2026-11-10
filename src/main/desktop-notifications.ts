@@ -21,6 +21,8 @@ export function desktopShowsAgentEvent(
   enabled: boolean,
   agentLevels: ReadonlyMap<string, ServerNotificationLevel> | null = null,
 ): boolean {
+  if (event.type === "channels-changed")
+    return enabled && !!server && !server.notificationsMuted && server.notificationLevel !== "nothing";
   return desktopAgentEventLevel(event, server, enabled, agentLevels) !== null;
 }
 
