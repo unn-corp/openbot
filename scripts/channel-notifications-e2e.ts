@@ -15,11 +15,12 @@
 // Writes .openbot-build/channel-notifications-e2e/report.json.
 
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { leadingAddress, serializeChatTagReference } from "@openbot/contracts/chat-tag-references";
 import {
   type AgentEvent,
   type ChannelMessage,
@@ -39,6 +40,7 @@ import {
   TEAM_PROTOCOL_V9,
   TEAM_PROTOCOL_VERSION_HEADER,
   teamCapabilitiesForProtocol,
+  USER_MENTIONS_CAPABILITY,
 } from "@openbot/contracts/team-protocol";
 import { CHANNEL_ROUTES, channelResponse } from "@openbot/contracts/team-protocol/channels-v1";
 import {
@@ -47,8 +49,13 @@ import {
 } from "@openbot/contracts/team-protocol/current";
 import { teamSideRouteCodec } from "@openbot/contracts/team-protocol/side-routes";
 import { createFormat, translateFor } from "@openbot/i18n";
+import { ChannelMentionNotifications } from "@openbot/team-client/channel-notifications";
+import { encodeLiveActivityBytes } from "@openbot/team-client/live-activity-seal";
+import { pushNotificationKeys } from "@openbot/team-client/push-notification-seal";
 import { plugin } from "bun";
 import { Effect } from "effect";
+import { openSealedLiveActivity } from "../apps/mobile/src/features/live-activity/model/live-activity-open";
+import { notificationTargetFromData } from "../apps/mobile/src/features/push-notifications/notification-target";
 import type { AgentBrowserHost } from "../src/backend/agent/turn-lifecycle";
 import { AgentService } from "../src/backend/agent-service";
 import { AgentStore } from "../src/backend/agent-store";
@@ -56,6 +63,7 @@ import { runCauseEffect } from "../src/backend/effect-boundary";
 import { MailboxStore } from "../src/backend/mailbox-store";
 import { OpenBotDatabase } from "../src/backend/openbot-database";
 import { SidebarLayoutStore } from "../src/backend/sidebar-layout-store";
+import type { NotificationRelayRequest } from "../src/main/push-notifications";
 import type { TeamApiBrowser } from "../src/main/team-api/dependencies";
 
 const OUT = resolve(import.meta.dirname, "../.openbot-build/channel-notifications-e2e");
@@ -164,6 +172,7 @@ plugin({
 });
 const { RemoteServerManager } = await import("../src/main/remote-server-manager");
 const { createRendererForwarders } = await import("../src/main/renderer-forwarders");
+const { PushNotificationService } = await import("../src/main/push-notifications");
 const { HostService } = await import("../src/main/host-service");
 const { TeamApiServer } = await import("../src/main/team-api-server");
 const { TeamStore } = await import("../src/main/team-store");
@@ -181,7 +190,7 @@ const report: { passed: boolean; unverified: string[]; steps: Step[] } = {
   passed: false,
   unverified: [
     "A remote host's channel list. This check reads the local host; the forwarder reads a remote list through the same decoder that the Team API steps use.",
-    "Phone push. A channel reply sends no phone notification, as before channels were deprecated.",
+    "Delivery through Apple/Google and native notification presentation on a physical phone. This check records the encrypted relay request and opens it with the phone keys.",
   ],
   steps: [],
 };
@@ -288,6 +297,7 @@ const manager = new RemoteServerManager(join(userData, "remote-servers.json"), c
   appVersion: APP_VERSION,
 });
 let agents: AgentService | undefined;
+let mentionPhones: InstanceType<typeof PushNotificationService> | undefined;
 let server: InstanceType<typeof TeamApiServer> | undefined;
 
 /** An agent message in the channel, as a finished channel turn stores it. */
@@ -430,6 +440,8 @@ try {
     ({ agent, channel, threadId }) => ({ agent, channel, threadId }),
   );
   const { agent, channel, threadId, host } = setup;
+  assert.ok(!V8_PEER_CAPABILITIES.includes(USER_MENTIONS_CAPABILITY));
+  assert.ok(V9_PEER_CAPABILITIES.includes(USER_MENTIONS_CAPABILITY));
   const channels = agents?.channels;
   assert.ok(channels);
   const forwarders = createRendererForwarders({
@@ -784,8 +796,335 @@ try {
     return read;
   });
 
+  await step(
+    "A user mention beyond the preview notifies its reader, opens the channel and creates no agent task",
+    async () => {
+      const reader = host.channelActor();
+      const taskCount = channels.store.tasks(channel.id).length;
+      const text = `${serializeChatTagReference("user", reader.name, reader.id)} ${"Details. ".repeat(80)}`;
+      const notified = nextNotification();
+      await runCauseEffect(
+        channels.command(
+          {
+            type: "send",
+            channelId: channel.id,
+            operationId: randomUUID(),
+            text,
+            recipientAgentId: null,
+            attachmentDraftIds: [],
+            replyToMessageId: null,
+          },
+          { id: "another-member", name: "Another person" },
+        ),
+      );
+      changed();
+      const notification = await notified;
+      assert.equal(notification.body, english("notification.userMention"));
+      notification.click();
+      assert.equal(lastOpened().channelId, channel.id);
+      assert.equal(channels.store.tasks(channel.id).length, taskCount);
+      const page = channels.store.page(channel.id);
+      assert.equal(page.messages.at(-1)?.taskId, null);
+      // Agent addressing still works when a person is the first tag.
+      const address = leadingAddress(
+        `${serializeChatTagReference("user", reader.name, reader.id)} ${serializeChatTagReference("agent", agent.name, agent.id)}`,
+      );
+      assert.equal(address.users.length, 1);
+      assert.equal(address.mentions[0]?.id, agent.id);
+      return { title: notification.title, opened: lastOpened(), noAgentTask: true };
+    },
+  );
+
+  await step(
+    "Full channel messages notify only their named reader, once, including late and streamed mentions",
+    async () => {
+      const tracker = new ChannelMentionNotifications();
+      const reader = host.channelActor();
+      const options = {
+        readerId: reader.id,
+        readPage: async (input: { channelId: string; beforeSequence?: number | undefined }) =>
+          channels.store.page(input.channelId, input.beforeSequence, 1),
+        translate: english,
+        redact: null,
+      };
+      const list = () => host.listChannels();
+      assert.equal((await tracker.read(list(), options)).length, 0, "Old mentions must not replay.");
+      const tag = serializeChatTagReference("user", reader.name, reader.id);
+      const entry = agentMessage(
+        channel.id,
+        { id: "another-member", name: "Another person" },
+        `${"Long prefix. ".repeat(60)}${tag}`,
+      );
+      entry.author.kind = "member";
+      entry.message.author = "user";
+      channels.store.update(channels.store.get(channel.id), { messages: [entry] });
+      const sameName = agentMessage(
+        channel.id,
+        { id: "third-member", name: "Another person" },
+        serializeChatTagReference("user", reader.name, "not-the-reader"),
+      );
+      sameName.author.kind = "member";
+      channels.store.update(channels.store.get(channel.id), { messages: [sameName] });
+      const results = await Promise.all([tracker.read(list(), options), tracker.read(list(), options)]);
+      assert.equal(results.flat().length, 1, "Concurrent updates must notify only once and read older pages.");
+      const own = agentMessage(channel.id, reader, tag);
+      own.author.kind = "member";
+      channels.store.update(channels.store.get(channel.id), { messages: [own] });
+      assert.equal((await tracker.read(list(), options)).length, 0, "Self-mentions stay quiet.");
+      const streamed = agentMessage(channel.id, agent, tag, { status: "streaming" });
+      channels.store.update(channels.store.get(channel.id), { messages: [streamed] });
+      assert.equal((await tracker.read(list(), options)).length, 0);
+      const saved = channels.store.page(channel.id).messages.find((message) => message.id === streamed.id);
+      assert.ok(saved);
+      channels.store.update(channels.store.get(channel.id), {
+        messages: [{ ...saved, message: { ...saved.message, status: "completed" } }],
+      });
+      assert.equal((await tracker.read(list(), options)).length, 1, "A finished streamed mention notifies once.");
+      assert.equal((await tracker.read(list(), options)).length, 0);
+      return {
+        lateMention: true,
+        paginated: true,
+        concurrentDeduplication: true,
+        selfSuppressed: true,
+        streamed: true,
+      };
+    },
+  );
+
+  await step("Mentions follow the needs-me level and the no-notifications switch", async () => {
+    const reader = host.channelActor();
+    const tag = serializeChatTagReference("user", reader.name, reader.id);
+    await runCauseEffect(manager.setNotificationLevel(LOCAL_SERVER_ID, "needs-me"));
+    const notified = nextNotification();
+    const post = agentMessage(channel.id, { id: "another-member", name: "Another person" }, tag);
+    post.author.kind = "member";
+    channels.store.update(channels.store.get(channel.id), { messages: [post] });
+    changed();
+    assert.equal((await notified).body, english("notification.userMention"));
+    await runCauseEffect(manager.setNotificationLevel(LOCAL_SERVER_ID, "nothing"));
+    const before = shown.length;
+    const quiet = agentMessage(channel.id, { id: "another-member", name: "Another person" }, tag);
+    quiet.author.kind = "member";
+    channels.store.update(channels.store.get(channel.id), { messages: [quiet] });
+    changed();
+    await new Promise((settled) => setImmediate(settled));
+    assert.equal(shown.length, before);
+    return { needsMe: true, nothingSuppressed: true };
+  });
+
+  await step(
+    "Channel mentions reach only the named member's iOS and Android phones, sealed and channel-addressed",
+    async () => {
+      assert.ok(agents);
+      const reader = host.channelActor();
+      const other = "phone-other-member";
+      const relay: NotificationRelayRequest[] = [];
+      const waiters = new Set<() => void>();
+      const secrets = new Map(
+        ["mention-ios", "mention-android", "mention-other", "mention-old"].map((sessionId) => [
+          sessionId,
+          new Uint8Array(randomBytes(32)),
+        ]),
+      );
+      let level: "needs-me" | "nothing" = "needs-me";
+      let memberActive = true;
+      let lastUse: number | null = null;
+      let channelHidden = false;
+      const phones = new PushNotificationService({
+        agents,
+        store: { list: () => [], replace: () => Effect.void },
+        send: (request) =>
+          Effect.sync(() => {
+            relay.push(request);
+            for (const wake of waiters) wake();
+            return "sent" as const;
+          }),
+        hiddenAgentIds: () => new Set(),
+        memberActive: () => memberActive,
+        lastUseElsewhere: () => lastUse,
+        atHostComputer: () => false,
+        liveActivityShows: () => false,
+        memberLevels: () => ({ server: level, agents: new Map() }),
+        randomBytes: (size) => new Uint8Array(randomBytes(size)),
+        channelHistory: {
+          list: (viewer) => (channelHidden ? [] : channels.store.list(viewer.memberId)),
+          page: (_viewer, input) => channels.store.page(input.channelId, input.beforeSequence),
+          unread: (memberId, channelId, sequence) => channels.store.isUnread(channelId, memberId, sequence),
+        },
+      });
+      mentionPhones = phones;
+      phones.start();
+      const register = (sessionId: string, memberId: string, away = true, supported = true, preview = true) => {
+        const secret = secrets.get(sessionId);
+        assert.ok(secret);
+        const viewer = {
+          memberId,
+          protocol: 9,
+          capabilities: supported ? new Set([USER_MENTIONS_CAPABILITY]) : new Set<string>(),
+        };
+        const value = {
+          serverId: "mention-server",
+          token: "a".repeat(64),
+          secret: encodeLiveActivityBytes(secret),
+          locale: "en",
+          away,
+          level: "needs-me" as const,
+          mutedUntil: null,
+          preview,
+          sound: "default" as const,
+        };
+        if (sessionId === "mention-ios")
+          phones.register(sessionId, viewer, {
+            value: { ...value, environment: "development", token: "b".repeat(64), liveActivityStartedAt: null },
+          });
+        else
+          phones.register(sessionId, viewer, {
+            platform: "android",
+            value: { ...value, token: sessionId.padEnd(64, "x") },
+          });
+      };
+      register("mention-ios", reader.id);
+      register("mention-android", reader.id);
+      register("mention-other", other);
+      register("mention-old", reader.id, true, false);
+      const waitForRelay = (count: number) =>
+        new Promise<void>((resolveReady, reject) => {
+          const deadline = setTimeout(() => {
+            waiters.delete(check);
+            reject(new Error(`Only ${relay.length} of ${count} mention pushes arrived.`));
+          }, STEP_DEADLINE_MS);
+          const check = () => {
+            if (relay.length >= count) {
+              clearTimeout(deadline);
+              waiters.delete(check);
+              resolveReady();
+            }
+          };
+          waiters.add(check);
+          check();
+        });
+      const opened = (request: NotificationRelayRequest) => {
+        const secret = secrets.get(request.push.sessionId);
+        assert.ok(secret);
+        const keys = pushNotificationKeys(secret);
+        const text = openSealedLiveActivity(
+          request.push.sealed,
+          encodeLiveActivityBytes(keys.seal),
+          encodeLiveActivityBytes(keys.tag),
+        );
+        assert.ok(text);
+        const content = JSON.parse(text);
+        assert.ok(isDynamicRecord(content));
+        return content;
+      };
+      const post = async (body: string, actor = { id: "phone-sender", name: "Phone sender" }) => {
+        const text = `${serializeChatTagReference("user", reader.name, reader.id)} ${body}`;
+        await runCauseEffect(
+          channels.command(
+            {
+              type: "send",
+              channelId: channel.id,
+              operationId: randomUUID(),
+              text,
+              recipientAgentId: null,
+              attachmentDraftIds: [],
+              replyToMessageId: null,
+            },
+            actor,
+          ),
+        );
+        // The real ChannelService emits the event through AgentService, as on the host.
+        await new Promise((settled) => setImmediate(settled));
+      };
+      await post("Phone mention.");
+      await waitForRelay(2);
+      assert.deepEqual(relay.map((request) => request.platform).sort(), ["android", "ios"]);
+      for (const request of relay) {
+        const content = opened(request);
+        assert.equal(content.kind, "mention");
+        assert.equal(content.channelId, channel.id);
+        assert.equal(content.agentId, "");
+        assert.equal(content.threadId, null);
+        assert.deepEqual(notificationTargetFromData(content), {
+          serverId: "mention-server",
+          agentId: "",
+          threadId: null,
+          channelId: channel.id,
+        });
+        assert.ok(!JSON.stringify(request).includes("Phone mention."), "The relay must not see message text.");
+      }
+      changed();
+      await post("Self mention.", reader);
+      level = "nothing";
+      await post("Muted mention.");
+      level = "needs-me";
+      await post("After mute.");
+      await waitForRelay(4);
+      assert.equal(
+        relay.length,
+        4,
+        "Self-mentions, duplicate events, muted members, other members and old phones stay quiet.",
+      );
+      register("mention-android", reader.id, false);
+      await post("Already read before suspension.");
+      await waitForRelay(5); // The away iPhone alone receives it.
+      channels.store.markRead(channel.id, reader.id, channels.store.page(channel.id).throughSequence, randomUUID());
+      await post("Unread after suspension.");
+      await waitForRelay(6);
+      phones.disconnected("mention-android");
+      await waitForRelay(7);
+      const heldPush = relay[6];
+      assert.ok(heldPush);
+      assert.ok(String(opened(heldPush).body).includes("Unread after suspension."));
+      assert.equal(relay.length, 7, "The held mention already read on another device must not replay.");
+      register("mention-android", reader.id);
+      lastUse = Date.now();
+      await post("Seen at the desktop.");
+      lastUse = null;
+      await post("Away from the desktop.");
+      await waitForRelay(9);
+      assert.equal(relay.length, 9);
+      register("mention-android", reader.id, true, true, false);
+      const secret = "sk-live-4f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c";
+      await post(`Authorization: Bearer ${secret}`);
+      await waitForRelay(11);
+      for (const request of relay.slice(9)) {
+        const content = opened(request);
+        assert.ok(!String(content.body).includes(secret), "A secret must not reach a phone preview.");
+        if (request.platform === "android") assert.equal(content.body, english("notification.userMention"));
+      }
+      channelHidden = true;
+      await post("Hidden channel.");
+      assert.equal(relay.length, 11);
+      memberActive = false;
+      await post("Removed member.");
+      assert.equal(relay.length, 11);
+      assert.equal(
+        notificationTargetFromData({ channelId: channel.id, agentId: "" }),
+        null,
+        "A channel needs a server.",
+      );
+      return {
+        ios: true,
+        android: true,
+        sealed: true,
+        tapTarget: true,
+        onlyNamedMember: true,
+        capabilityGated: true,
+        mute: true,
+        self: true,
+        heldUnreadOnly: true,
+        revokedMember: true,
+        desktopActivity: true,
+        previewPrivacy: true,
+        hiddenChannel: true,
+      };
+    },
+  );
+
   report.passed = true;
 } finally {
+  if (mentionPhones) await runCauseEffect(mentionPhones.dispose()).catch(() => undefined);
   if (server) await Effect.runPromise(server.stop()).catch(() => undefined);
   await runCauseEffect(manager.stop()).catch(() => undefined);
   if (agents) await runCauseEffect(agents.stop()).catch(() => undefined);

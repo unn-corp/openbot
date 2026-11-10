@@ -33,10 +33,4 @@ export interface PushNotificationsNative {
   previewSound(sound: NotificationSound): Promise<void>;
 }
 
-/** What a notification names: its agent, and the server and thread of the event. */
-export interface NotificationTarget {
-  agentId: string;
-  serverId: string | null;
-  /** The thread of the event. A thread of a channel opens the channel. */
-  threadId: string | null;
-}
+export type { NotificationTarget } from "./notification-target";

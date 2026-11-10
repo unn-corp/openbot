@@ -1,6 +1,6 @@
-import { isString } from "@openbot/contracts/runtime-values";
 import * as Notifications from "expo-notifications";
 import { useEffect, useRef } from "react";
+import { notificationTargetFromData } from "./notification-target";
 import { type NotificationTarget, SOUND_PREVIEW_KEY } from "./push-notifications-native.types";
 
 /**
@@ -35,8 +35,9 @@ export function useNotificationTaps(open: (target: NotificationTarget) => void, 
         if (notification.request.content.data?.[SOUND_PREVIEW_KEY] === true) {
           return { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: true, shouldSetBadge: false };
         }
-        const agentId = notificationTarget(notification)?.agentId ?? null;
-        const shown = agentId !== null && agentId === openChatRef.current();
+        const target = notificationTarget(notification);
+        const key = target?.channelId ? `channel:${target.serverId}:${target.channelId}` : target?.agentId;
+        const shown = !!key && key === openChatRef.current();
         return { shouldShowBanner: !shown, shouldShowList: !shown, shouldPlaySound: !shown, shouldSetBadge: false };
       },
     });
@@ -55,14 +56,5 @@ export function useNotificationTaps(open: (target: NotificationTarget) => void, 
 
 function notificationTarget(notification: Notifications.Notification): NotificationTarget | null {
   // A notification that the extension could not open has no data.
-  const data = notification.request.content.data;
-  const agentId = data?.agentId;
-  if (!isString(agentId) || !agentId) return null;
-  const serverId = data?.serverId;
-  const threadId = data?.threadId;
-  return {
-    agentId,
-    serverId: isString(serverId) && serverId ? serverId : null,
-    threadId: isString(threadId) && threadId ? threadId : null,
-  };
+  return notificationTargetFromData(notification.request.content.data);
 }

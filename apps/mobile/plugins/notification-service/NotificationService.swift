@@ -34,12 +34,13 @@ final class NotificationService: UNNotificationServiceExtension {
       content.body = notification.body
       if let serverName = notification.serverName { content.subtitle = serverName }
       // iOS groups the notifications of one chat.
-      content.threadIdentifier = "\(notification.serverId)/\(notification.agentId)"
+      content.threadIdentifier = "\(notification.serverId)/\(notification.channelId ?? notification.agentId)"
       // `expo-notifications` gives the app this dictionary as the notification data.
       let data: [String: Any] = [
         "serverId": notification.serverId,
         "agentId": notification.agentId,
         "threadId": notification.threadId as Any? ?? NSNull(),
+        "channelId": notification.channelId as Any? ?? NSNull(),
         "kind": notification.kind,
       ]
       userInfo["body"] = data
@@ -123,6 +124,7 @@ struct OpenedNotification {
   let serverId: String
   let agentId: String
   let threadId: String?
+  let channelId: String?
   let kind: String
   let title: String
   let body: String
@@ -172,6 +174,7 @@ enum SealedNotification {
         serverId: server.serverId,
         agentId: agentId,
         threadId: json["threadId"] as? String,
+        channelId: json["channelId"] as? String,
         kind: kind,
         title: title,
         body: text,

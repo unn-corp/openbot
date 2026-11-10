@@ -13,7 +13,7 @@ import {
   type NotificationRelayPush,
   type NotificationSound,
 } from "@openbot/contracts/notification-relay";
-import { TEAM_CHANNEL_ATTENTION_CAPABILITY } from "@openbot/contracts/team-protocol/current";
+import { TEAM_CHANNEL_ATTENTION_CAPABILITY, USER_MENTIONS_CAPABILITY } from "@openbot/contracts/team-protocol/current";
 import { resolveLocale, translateFor } from "@openbot/i18n";
 import { redactText, toLogValue } from "@openbot/logging";
 import {
@@ -23,6 +23,7 @@ import {
   agentNotificationLevel,
   notificationForAgentEvent,
 } from "@openbot/team-client/agent-notifications";
+import type { ChannelMentionNotificationContent } from "@openbot/team-client/channel-notifications";
 import {
   decodeLiveActivityBytes,
   LIVE_ACTIVITY_NONCE_BYTES,
@@ -38,6 +39,7 @@ import {
 import { Effect, Exit, Fiber, Result, Schema, Scope } from "effect";
 import { isNoUpdateAnswer } from "../backend/agent/routine-quiet-runs";
 import type { AgentService } from "../backend/agent-service";
+import { type ChannelPushHistory, ChannelPushReader } from "./channel-push-notifications";
 import type { PushNotificationStore, PushTarget, StoredPushRegistration } from "./push-notification-store";
 import type { TeamApiAgents } from "./team-api/dependencies";
 import { markerExclusionsForCapabilities } from "./team-api/request-helpers";
@@ -116,6 +118,7 @@ interface PushNotificationOptions {
   ): boolean;
   /** The channel whose execution thread `threadId` is, or `null` for an agent's own thread. */
   channelForThread?(threadId: string): AgentNotificationChannel | null;
+  channelHistory?: ChannelPushHistory;
   randomBytes(size: number): Uint8Array;
   now?: () => number;
   logger?: { warn(message: string, ...values: unknown[]): void };
@@ -139,6 +142,12 @@ interface HeldEvent {
   at: number;
 }
 
+interface HeldMention {
+  mention: ChannelMentionNotificationContent;
+  event: Extract<AgentEvent, { type: "channels-changed" }>;
+  at: number;
+}
+
 interface Registration {
   stored: StoredPushRegistration;
   capabilities: ReadonlySet<string>;
@@ -147,6 +156,8 @@ interface Registration {
   connected: boolean;
   /** Events that came while the phone looked on screen, oldest first. */
   held: HeldEvent[];
+  heldMentions: HeldMention[];
+  mentions: ChannelPushReader | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -287,12 +298,28 @@ export class PushNotificationService {
     const secret = decodeLiveActivityBytes(stored.value.secret);
     if (secret?.length !== LIVE_ACTIVITY_SECRET_BYTES) return false;
     if (previous) this.#clearFlush(previous);
+    const sameViewer =
+      previous?.stored.memberId === stored.memberId &&
+      previous.stored.protocol === stored.protocol &&
+      [...previous.capabilities].sort().join("\n") === [...stored.capabilities].sort().join("\n");
+    const capabilities = new Set(stored.capabilities);
+    const mentions = sameViewer
+      ? previous.mentions
+      : this.#options.channelHistory && capabilities.has(USER_MENTIONS_CAPABILITY)
+        ? new ChannelPushReader(
+            this.#options.channelHistory,
+            { memberId: stored.memberId, protocol: stored.protocol, capabilities },
+            translateFor(resolveLocale("system", stored.value.locale)),
+          )
+        : null;
     this.#registrations.set(stored.sessionId, {
       stored,
       capabilities: new Set(stored.capabilities),
       keys: pushNotificationKeys(secret),
       connected,
-      held: previous?.held ?? [],
+      held: sameViewer ? previous.held : [],
+      heldMentions: sameViewer ? previous.heldMentions : [],
+      mentions,
       flushTimer: null,
     });
     return true;
@@ -307,6 +334,10 @@ export class PushNotificationService {
     received: AgentEvent,
     only?: Registration,
   ) {
+    if (received.type === "channels-changed") {
+      yield* this.#channelMentions(received, only);
+      return;
+    }
     // A routine thread's turn notifies as a turn of the chat does. Its answer is in the routine thread.
     const routineTaskId = received.type === "routine-thread-turn-completed" ? received.taskId : null;
     const event = received.type === "routine-thread-turn-completed" ? received.turn : received;
@@ -392,6 +423,92 @@ export class PushNotificationService {
     }
   });
 
+  /** Channel changes carry no text; read each phone's permitted history and seal only its mentions. */
+  #channelMentions = Effect.fn("PushNotifications.channelMentions")(function* (
+    this: PushNotificationService,
+    event: Extract<AgentEvent, { type: "channels-changed" }>,
+    only?: Registration,
+  ) {
+    for (const registration of only ? [only] : [...this.#registrations.values()]) {
+      if (!registration.mentions) continue;
+      if (!this.#options.memberActive(registration.stored.memberId)) {
+        this.remove(registration.stored.sessionId);
+        continue;
+      }
+      const translate = translateFor(resolveLocale("system", registration.stored.value.locale));
+      const mentions = yield* Effect.tryPromise(
+        () =>
+          registration.mentions?.refresh(translate, registration.stored.value.preview ? redactText : null) ??
+          Promise.resolve([]),
+      ).pipe(
+        Effect.catch((error) => {
+          this.#options.logger?.warn("Channel mentions could not be read:", toLogValue(error.cause));
+          return Effect.succeed([]);
+        }),
+      );
+      const current = this.#registrations.get(registration.stored.sessionId);
+      if (!current || current.mentions !== registration.mentions) continue;
+      for (const mention of mentions) yield* this.#deliverMention(current, mention, event, !only);
+    }
+  });
+
+  #deliverMention = Effect.fn("PushNotifications.deliverMention")(function* (
+    this: PushNotificationService,
+    registration: Registration,
+    mention: ChannelMentionNotificationContent,
+    event: Extract<AgentEvent, { type: "channels-changed" }>,
+    hold: boolean,
+  ) {
+    const { stored } = registration;
+    const { memberId, sessionId, value } = stored;
+    if (!this.#running || this.#registrations.get(sessionId) !== registration || !registration.mentions) return;
+    if (!this.#options.memberActive(memberId)) {
+      this.remove(sessionId);
+      return;
+    }
+    const now = this.#now();
+    if (value.mutedUntil !== null && value.mutedUntil * 1_000 > now) return;
+    if ((this.#options.memberLevels?.(memberId).server ?? value.level) === "nothing") return;
+    if (!registration.mentions.unseen(mention)) return;
+    if (!value.away && registration.connected) {
+      if (hold)
+        registration.heldMentions = [
+          ...registration.heldMentions.filter((item) => now - item.at < HELD_EVENT_MS),
+          { mention, event, at: now },
+        ].slice(-HELD_EVENT_LIMIT);
+      return;
+    }
+    const used = this.#lastUseElsewhere(memberId, sessionId);
+    if ((used !== null && now - used < this.#awayAfterMs) || this.#options.atHostComputer(memberId, event)) return;
+    if (value.token === null) return;
+    const translate = translateFor(resolveLocale("system", value.locale));
+    const fixed = translate("notification.userMention");
+    const content: PushNotificationContent = {
+      serverId: value.serverId,
+      agentId: mention.agentId,
+      threadId: null,
+      channelId: mention.channelId,
+      kind: "mention",
+      title: mention.title,
+      body: value.preview ? mention.body : fixed,
+    };
+    yield* this.#send(registration, content, fixed, () => {
+      const current = this.#now();
+      const used = this.#lastUseElsewhere(memberId, sessionId);
+      return (
+        this.#running &&
+        this.#registrations.get(sessionId) === registration &&
+        (value.away || !registration.connected) &&
+        this.#options.memberActive(memberId) &&
+        (value.mutedUntil === null || value.mutedUntil * 1_000 <= current) &&
+        (this.#options.memberLevels?.(memberId).server ?? value.level) !== "nothing" &&
+        !(used !== null && current - used < this.#awayAfterMs) &&
+        !this.#options.atHostComputer(memberId, event) &&
+        (registration.mentions?.unseen(mention) ?? false)
+      );
+    }).pipe(Effect.forkIn(this.#scope, { startImmediately: true }));
+  });
+
   /** The answer of a turn in the agent's own chat or in a routine thread, or `null` when it has none. */
   #answer = Effect.fn("PushNotifications.answer")(function* (
     this: PushNotificationService,
@@ -422,6 +539,7 @@ export class PushNotificationService {
     registration: Registration,
     content: PushNotificationContent,
     shortBody: string,
+    stillValid?: () => boolean,
   ) {
     const { stored, keys } = registration;
     let sealed = sealPushNotification(content, keys, this.#options.randomBytes(LIVE_ACTIVITY_NONCE_BYTES));
@@ -434,6 +552,7 @@ export class PushNotificationService {
     if (!request) return;
     // A Mac that wakes before its network, or a short fault at Apple or Google, refuses one send.
     for (let attempt = 0; ; attempt += 1) {
+      if (stillValid && !stillValid()) return;
       const result = yield* Effect.result(this.#options.send(request));
       if (Result.isSuccess(result)) {
         // The session ended, the app was removed, or Apple or Google refused the token.
@@ -463,6 +582,7 @@ export class PushNotificationService {
   #dropHeld(registration: Registration): void {
     this.#clearFlush(registration);
     registration.held = [];
+    registration.heldMentions = [];
   }
 
   #clearFlush(registration: Registration): void {
@@ -487,7 +607,7 @@ export class PushNotificationService {
 
   /** Sends the kept events of a phone that is away, after a short wait for the phone to say that it is back. */
   #scheduleFlush(registration: Registration): void {
-    if (!registration.held.length || registration.flushTimer) return;
+    if ((!registration.held.length && !registration.heldMentions.length) || registration.flushTimer) return;
     registration.flushTimer = setTimeout(() => {
       registration.flushTimer = null;
       if (this.#registrations.get(registration.stored.sessionId) !== registration) return;
@@ -500,7 +620,10 @@ export class PushNotificationService {
     if (!value.away && registration.connected) return;
     const now = this.#now();
     const held = registration.held.filter((item) => now - item.at < HELD_EVENT_MS);
+    const heldMentions = registration.heldMentions.filter((item) => now - item.at < HELD_EVENT_MS);
     registration.held = [];
+    registration.heldMentions = [];
+    for (const item of heldMentions) yield* this.#deliverMention(registration, item.mention, item.event, false);
     if (!held.length) return;
     const snapshot = this.#options.agents.getRuntimeSnapshot();
     const reads = this.#options.agents.listConversationReads(

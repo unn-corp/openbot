@@ -39,7 +39,11 @@ import { BROWSER_PROXIES_CAPABILITY } from "@openbot/contracts/team-protocol/bro
 import { CHANNEL_ISOLATION_CAPABILITY } from "@openbot/contracts/team-protocol/channel-isolation-v1";
 import { CONNECTORS_CAPABILITY } from "@openbot/contracts/team-protocol/connectors-v1";
 import { CONTEXT_RESET_CAPABILITY } from "@openbot/contracts/team-protocol/context-reset-v1";
-import { AGENT_HIDDEN_CAPABILITY, TEAM_AGENT_CREATE_MODEL_CAPABILITY } from "@openbot/contracts/team-protocol/current";
+import {
+  AGENT_HIDDEN_CAPABILITY,
+  TEAM_AGENT_CREATE_MODEL_CAPABILITY,
+  USER_MENTIONS_CAPABILITY,
+} from "@openbot/contracts/team-protocol/current";
 import { DISCORD_ACCESS_CAPABILITY } from "@openbot/contracts/team-protocol/discord-access-v1";
 import { EVENTS_CAPABILITY } from "@openbot/contracts/team-protocol/events-v1";
 import { HOST_RELEASE_CAPABILITY } from "@openbot/contracts/team-protocol/host-release-v1";
@@ -690,6 +694,13 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
             threadId,
           )
         : null,
+    memberId: () => workspace.state.memberId,
+    readChannel: (hostId, input) => {
+      if (workspace.state.host?.hostId !== hostId) return Promise.reject(new Error("The active server changed."));
+      const api = workspace.runtime.channels;
+      if (!api) return Promise.reject(new Error("Channels are unavailable."));
+      return api.readChannel(input);
+    },
     readAgentLevels: workspace.runtime.listAgentNotificationLevels,
   });
   // A host keeps the level of the user for all devices, so the rail reads it when the host comes online.
@@ -1430,7 +1441,7 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
       const previous = channelBaseline?.scope === scope ? channelBaseline.channels : null;
       channelBaseline = { scope, channels: list };
       if (hostId) {
-        notifyChannelReplies(hostId, previous, list);
+        void notifyChannelReplies(hostId, previous, list);
         saveRemoteFrameChannels(props.accountId, hostId, list);
       }
     },
@@ -2687,6 +2698,16 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
                         agent={undefined}
                         agents={workspace.profiles()}
                         mentionAgents={channelView.mentionAgents()}
+                        mentionUsers={(workspace.state.presence?.members ?? [])
+                          .filter(
+                            (member) =>
+                              !member.disabled && workspace.state.capabilities.includes(USER_MENTIONS_CAPABILITY),
+                          )
+                          .map((member) => ({
+                            id: member.id,
+                            name: member.name ?? member.username,
+                            username: member.username,
+                          }))}
                         modelOptions={[]}
                         messages={channelView.messages()}
                         unreadCount={channelView.unreadCount()}

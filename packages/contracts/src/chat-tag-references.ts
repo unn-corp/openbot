@@ -11,7 +11,7 @@
  * the name. Message bodies are stored as written, so an older app reading a newer message is a
  * real case, and it stays readable.
  */
-export type ChatTagKind = "agent" | "skill" | "mcp" | "quote" | "tab" | "thread";
+export type ChatTagKind = "agent" | "user" | "skill" | "mcp" | "quote" | "tab" | "thread";
 
 export interface ChatTagReference {
   kind: ChatTagKind;
@@ -21,7 +21,7 @@ export interface ChatTagReference {
   end: number;
 }
 
-const CHAT_TAG_REFERENCE_PATTERN = /@\[([^\]\r\n]+)\]\((agent|skill|mcp|quote|tab|thread)(\+uri)?:([^)\r\n]+)\)/gu;
+const CHAT_TAG_REFERENCE_PATTERN = /@\[([^\]\r\n]+)\]\((agent|user|skill|mcp|quote|tab|thread)(\+uri)?:([^)\r\n]+)\)/gu;
 
 /*
  * Quoted text is any text, and Markdown reads the marker as a link. A bracket, a backslash, a
@@ -124,22 +124,30 @@ const ADDRESS_SEPARATORS = /^(?:[\s,]|and\b|&|@everyone(?![\p{L}\p{N}_'’-]))*/
  * you think?" or "@everyone ideas?". Spaces, commas and "and" may separate them. A tag after the
  * first other word is a reference in the text, not an address.
  */
-export function leadingAddress(value: string): { mentions: ChatTagReference[]; everyone: boolean } {
+export function leadingAddress(value: string): {
+  mentions: ChatTagReference[];
+  users: ChatTagReference[];
+  everyone: boolean;
+} {
   const mentions: ChatTagReference[] = [];
+  const users: ChatTagReference[] = [];
   let end = 0;
   let everyone = false;
   for (const reference of [...chatTagReferences(value), undefined]) {
     const gap = value.slice(end, reference?.start);
     const separators = ADDRESS_SEPARATORS.exec(gap)?.[0] ?? "";
     everyone ||= separators.toLowerCase().includes(EVERYONE_MENTION);
-    if (reference?.kind !== "agent" || separators.length !== gap.length) break;
-    mentions.push(reference);
+    if (!reference || (reference.kind !== "agent" && reference.kind !== "user") || separators.length !== gap.length)
+      break;
+    if (reference.kind === "agent") mentions.push(reference);
+    else users.push(reference);
     end = reference.end;
   }
-  return { mentions, everyone };
+  return { mentions, users, everyone };
 }
 
 function chatTagKind(value: string | undefined): ChatTagKind {
+  if (value === "user") return value;
   if (value === "skill" || value === "mcp" || value === "quote" || value === "tab" || value === "thread") return value;
   return "agent";
 }
@@ -222,8 +230,8 @@ function fileQuoteHeading(file: FileQuoteTarget): string {
 }
 
 /** What the provider reads in place of a marker. A name alone would not say what it names. */
-function expandedChatTag(kind: "agent" | "skill" | "mcp", name: string): string {
-  if (kind === "agent") return `@${name}`;
+function expandedChatTag(kind: "agent" | "user" | "skill" | "mcp", name: string): string {
+  if (kind === "agent" || kind === "user") return `@${name}`;
   return kind === "mcp" ? `${name} (MCP server)` : `${name} (skill)`;
 }
 

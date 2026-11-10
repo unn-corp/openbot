@@ -26,6 +26,16 @@ const markdown = new Marked({
       },
     },
     {
+      name: "userMention",
+      level: "inline",
+      start: (source) => source.indexOf("@["),
+      tokenizer(source) {
+        const reference = chatTagReferences(source)[0];
+        if (reference?.start === 0 && reference.kind === "user")
+          return { type: "text", raw: source.slice(0, reference.end), text: `@${reference.name}` };
+      },
+    },
+    {
       name: "agentMention",
       level: "inline",
       start: (source) => source.indexOf("@["),

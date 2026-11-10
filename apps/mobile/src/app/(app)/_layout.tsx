@@ -81,9 +81,18 @@ function AuthenticatedStack() {
     title: "",
   } as const;
   const { closeDrawer } = useAppDrawer();
-  const { agentId: openAgentId } = useGlobalSearchParams<{ agentId?: string }>();
+  const {
+    agentId: openAgentId,
+    channelId: openChannelId,
+    serverId: openServerId,
+  } = useGlobalSearchParams<{ agentId?: string; channelId?: string; serverId?: string }>();
   const openChat = useRef<string | null>(null);
-  openChat.current = segments.at(-2) === "chat" && typeof openAgentId === "string" ? openAgentId : null;
+  openChat.current =
+    segments.at(-2) === "channel" && typeof openChannelId === "string" && typeof openServerId === "string"
+      ? `channel:${openServerId}:${openChannelId}`
+      : segments.at(-2) === "chat" && typeof openAgentId === "string"
+        ? openAgentId
+        : null;
   /** Opens a chat, or the chat list for `null`, from a Live Activity or a notification. */
   const openFromOutside = useCallback(
     (agentId: string | null) =>
@@ -126,8 +135,8 @@ function AuthenticatedStack() {
    * at a cold start comes before the server connects, so it waits a short time for the channel list.
    */
   const openFromNotification = useCallback(
-    ({ agentId, serverId, threadId }: NotificationTarget) => {
-      if (!serverId || !threadId) {
+    ({ agentId, serverId, threadId, channelId }: NotificationTarget) => {
+      if (!serverId || (!threadId && !channelId)) {
         openFromOutside(agentId);
         return;
       }
@@ -135,10 +144,12 @@ function AuthenticatedStack() {
         .channelStore.whenListed(serverId, NOTIFICATION_CHANNEL_WAIT_MS)
         .then((state) => {
           const channel = state.channels.find(
-            (item) => !item.archived && item.threads?.some((thread) => thread.threadId === threadId),
+            (item) =>
+              !item.archived &&
+              (channelId ? item.id === channelId : item.threads?.some((thread) => thread.threadId === threadId)),
           );
           if (!channel) {
-            openFromOutside(agentId);
+            if (agentId) openFromOutside(agentId);
             return;
           }
           whenUnlocked(() => {
@@ -146,6 +157,9 @@ function AuthenticatedStack() {
             if (router.canDismiss()) router.dismissAll();
             router.push({ pathname: "/channel/[channelId]", params: { channelId: channel.id, serverId } });
           });
+        })
+        .catch(() => {
+          if (agentId) openFromOutside(agentId);
         });
     },
     [workspace, openFromOutside, closeDrawer],

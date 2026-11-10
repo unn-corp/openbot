@@ -16,6 +16,7 @@ internal data class OpenedNotification(
   val serverId: String,
   val agentId: String,
   val threadId: String?,
+  val channelId: String?,
   val kind: String,
   val title: String,
   val body: String,
@@ -28,6 +29,7 @@ internal data class OpenedNotification(
       .put("serverId", serverId)
       .put("agentId", agentId)
       .put("threadId", threadId ?: JSONObject.NULL)
+      .put("channelId", channelId ?: JSONObject.NULL)
       .put("kind", kind)
 }
 
@@ -84,6 +86,7 @@ internal object SealedNotification {
         serverId = server.serverId,
         agentId = agentId,
         threadId = json.opt("threadId") as? String,
+        channelId = json.opt("channelId") as? String,
         kind = kind,
         title = title,
         body = text,
