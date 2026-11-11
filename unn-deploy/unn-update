@@ -10,6 +10,8 @@
 #                              and the nightly window). Stages, then, for an install, snapshots the
 #                              data, applies, health-checks, and rolls back on failure.
 #   unn-update install-window  Nightly timer. Asks for the install when a patched release is staged.
+#   unn-update rebuild         Rebuilds the installed version with the current unn.patch and swaps
+#                              app.asar in place (restores it if the server is not healthy).
 #   unn-update status          Prints the last lines of the status log.
 #
 # Controls: touch /var/lib/unn-update/hold to pause everything. Remove a version from
@@ -84,30 +86,32 @@ build_patched() {
   log "building $v: clone"
   as_build git clone --quiet --depth 1 --branch "v$v" "$UPSTREAM_GIT" "$w/src" || fail "clone v$v"
   as_build git -C "$w/src" apply --check "$LIB/unn.patch" || fail "unn.patch does not apply to v$v"
-  as_build git -C "$w/src" apply "$LIB/unn.patch" || fail "unn.patch apply v$v"
+  # The patch may change sources, never dependencies: the lockfile and package manifests must stay.
+  as_build git -C "$w/src" apply --numstat "$LIB/unn.patch" | cut -f3 | grep -E '(^|/)(package\.json|bun\.lock|bun\.lockb)$' &&
+    fail "unn.patch changes package manifests or the lockfile; not supported"
   bunv=$(sed -n 's/.*"packageManager": *"bun@\([0-9.]*\)".*/\1/p' "$w/src/package.json")
   [ -n "$bunv" ] || fail "no packageManager bun version in v$v"
   bun=$(ensure_bun "$bunv") || fail "bun $bunv unavailable"
-  log "building $v: install + build (bun $bunv)"
+  log "building $v: install + unpatched build (bun $bunv)"
   as_build bash -c "cd '$w/src' && '$bun' install --frozen-lockfile --ignore-scripts >/dev/null 2>&1 && '$bun' run build >/dev/null 2>&1" ||
     fail "bun install/build failed for v$v"
   asar=$w/src/node_modules/@electron/asar/bin/asar.js
   [ -f "$asar" ] || fail "asar tool missing"
-  log "building $v: repack"
   as_build node "$asar" extract "$REL/resources/app.asar" "$w/ex" || fail "extract official asar"
-  # Safety gate: the build must reproduce the official bundle except for the patched main bundle.
+  # Safety gate: the unpatched build must reproduce the official bundle byte for byte.
   local d; d=$(diff -rq "$w/ex/out" "$w/src/out" || true)
-  [ "$d" = "Files $w/ex/out/main/index.js and $w/src/out/main/index.js differ" ] ||
-    fail "build differs from the official release in unexpected ways: $(echo "$d" | head -n 3 | tr '\n' ';')"
-  as_build cp "$w/src/out/main/index.js" "$w/ex/out/main/index.js" || fail "copy patched bundle"
+  [ -z "$d" ] || fail "unpatched build differs from the official release: $(echo "$d" | head -n 3 | tr '\n' ';')"
+  log "building $v: patched build"
+  as_build git -C "$w/src" apply "$LIB/unn.patch" || fail "unn.patch apply v$v"
+  as_build bash -c "cd '$w/src' && '$bun' run build >/dev/null 2>&1" || fail "patched build failed for v$v"
+  as_build bash -c "rm -rf '$w/ex/out' && cp -a '$w/src/out' '$w/ex/out'" || fail "copy patched output"
+  log "building $v: repack"
   as_build node "$asar" pack "$w/ex" "$w/new.asar" --unpack "$UNPACK" || fail "pack asar"
-  # Safety gates: same unpacked file set and archive entry count as the official one.
+  # Safety gate: the same set of unpacked files as the official release.
   local a b
   a=$(cd "$w/new.asar.unpacked" && find . -type f | sort | md5sum)
   b=$(cd "$REL/resources/app.asar.unpacked" && find . -type f | sort | md5sum)
   [ "$a" = "$b" ] || fail "unpacked file set differs from the official release"
-  [ "$(as_build node "$asar" list "$w/new.asar" | wc -l)" = "$(as_build node "$asar" list "$REL/resources/app.asar" | wc -l)" ] ||
-    fail "archive entry count differs from the official release"
   grep -q "$MARKER" "$w/new.asar" || fail "patch marker missing in rebuilt asar"
 }
 
@@ -121,6 +125,39 @@ selftest() {
   if cmp -s "$WORK/$v/new.asar" "$INSTALL/app/resources/app.asar"; then log "selftest OK: rebuilt asar is byte-identical to the installed one"
   else log "selftest: rebuilt asar differs from the installed one (sha $(sha256sum "$WORK/$v/new.asar" | cut -c1-12) vs $(sha256sum "$INSTALL/app/resources/app.asar" | cut -c1-12))"; fi
   rm -rf "$t" "$WORK/$v"
+}
+
+# Rebuilds the INSTALLED version with the current unn.patch (after the patch changed, for example a new
+# feature) and swaps app.asar in place. Same version, so no data migration: the old files are kept until
+# the server is healthy again, and restored if it is not.
+rebuild() {
+  local v t b r=$INSTALL/app/resources manifest sha
+  v=$(version_of "$INSTALL/app"); t=$WORK/rebuild-$v; b=$STATE_DIR/rollback-app
+  rm -rf "$t"; install -d -o "$BUILD_USER" -m 0750 "$t" || fail "work dir"
+  as_build bash -c "cd '$t' && curl -fsSL -o OpenBot.AppImage '$RELEASES/download/v$v/OpenBot-$v-x86_64.AppImage' && chmod 700 OpenBot.AppImage && ./OpenBot.AppImage --appimage-extract >/dev/null" || fail "rebuild: download"
+  manifest=$(curl -fsSL "$RELEASES/latest/download/latest-linux.yml" || true)
+  if [ "$(sed -n 's/^version: *//p' <<<"$manifest" | head -n 1)" = "$v" ]; then
+    sha=$(sed -n 's/^sha512: *//p' <<<"$manifest" | head -n 1)
+    [ "$(openssl dgst -sha512 -binary "$t/OpenBot.AppImage" | openssl base64 -A)" = "$sha" ] || fail "rebuild: AppImage does not match the manifest"
+  fi
+  ( build_patched "$v" "$t/squashfs-root" ) || fail "rebuild: build failed"
+  if cmp -s "$WORK/$v/new.asar" "$r/app.asar"; then log "rebuild: the installed app.asar is already current"; rm -rf "$t" "$WORK/$v"; return 0; fi
+  log "rebuild: replacing app.asar of $v (the server restarts)"
+  NEED_START=1
+  systemctl stop openbot.service || fail "could not stop OpenBot"
+  rm -rf "$b"; mkdir -p "$b"; cp -a "$r/app.asar" "$r/app.asar.unpacked" "$b/" || fail "rebuild: backup failed"
+  cp "$WORK/$v/new.asar" "$r/app.asar"
+  rm -rf "$r/app.asar.unpacked"; cp -a "$WORK/$v/new.asar.unpacked" "$r/app.asar.unpacked"
+  chown -R root:root "$r/app.asar" "$r/app.asar.unpacked"; chmod -R u+rwX,go=rX "$r/app.asar" "$r/app.asar.unpacked"
+  if systemctl start openbot.service && health_ok "$v"; then
+    log "rebuild: healthy with the new app.asar"; rm -rf "$b" "$t" "$WORK/$v"; return 0
+  fi
+  log "rebuild: not healthy; restoring the previous app.asar"
+  systemctl stop openbot.service || true
+  rm -rf "$r/app.asar" "$r/app.asar.unpacked"; cp -a "$b/app.asar" "$b/app.asar.unpacked" "$r/"
+  systemctl start openbot.service
+  health_ok "$v" && rm -rf "$b" "$t" "$WORK/$v"
+  return 1
 }
 
 stage() {
@@ -246,5 +283,6 @@ case ${1:-} in
   request) request ;;
   install-window) install_window ;;
   selftest) selftest ;;
-  *) echo "usage: $0 stage|request|install-window|selftest|status" >&2; exit 2 ;;
+  rebuild) rebuild ;;
+  *) echo "usage: $0 stage|request|install-window|selftest|rebuild|status" >&2; exit 2 ;;
 esac

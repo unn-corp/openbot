@@ -1,7 +1,67 @@
+diff --git a/apps/mobile/changelog.d/unn-user-mentions.md b/apps/mobile/changelog.d/unn-user-mentions.md
+new file mode 100644
+index 000000000..1fcf8be7d
+--- /dev/null
++++ b/apps/mobile/changelog.d/unn-user-mentions.md
+@@ -0,0 +1,3 @@
++### Added
++
++- Receive encrypted push notifications when someone mentions you in a channel. Tap to open the channel, including posts with no agent thread. Mentions follow your notification settings and stay quiet when you have read them on another device.
+diff --git a/apps/mobile/src/features/push-notifications/notification-target.ts b/apps/mobile/src/features/push-notifications/notification-target.ts
+new file mode 100644
+index 000000000..40c4e33d9
+--- /dev/null
++++ b/apps/mobile/src/features/push-notifications/notification-target.ts
+@@ -0,0 +1,26 @@
++import { isDynamicRecord, isString } from "@openbot/contracts/runtime-values";
++/** What a notification names: its agent, and the server and thread of the event. */
++export interface NotificationTarget {
++  agentId: string;
++  serverId: string | null;
++  /** The thread of the event. A thread of a channel opens the channel. */
++  threadId: string | null;
++  /** A user mention can name a channel without any agent or execution thread. */
++  channelId?: string | null;
++}
++
++/** Data supplied only after the native extension has authenticated the server's sealed content. */
++export function notificationTargetFromData(data: unknown): NotificationTarget | null {
++  if (!isDynamicRecord(data)) return null;
++  const serverId = isString(data.serverId) && data.serverId ? data.serverId : null;
++  const channelId = isString(data.channelId) && data.channelId ? data.channelId : null;
++  const agentId = isString(data.agentId) ? data.agentId : "";
++  if (channelId && !serverId) return null;
++  if (!channelId && !agentId) return null;
++  return {
++    agentId,
++    serverId,
++    threadId: isString(data.threadId) && data.threadId ? data.threadId : null,
++    channelId,
++  };
++}
+diff --git a/changelog.d/unn-user-mentions.md b/changelog.d/unn-user-mentions.md
+new file mode 100644
+index 000000000..244b4ceca
+--- /dev/null
++++ b/changelog.d/unn-user-mentions.md
+@@ -0,0 +1,4 @@
++### Added
++
++- Mention a server member from the channel composer's `@` list. Mentions name people by ID and notify the named member on desktop, in the browser, and through encrypted iOS and Android push. A click or tap opens the channel. Server mute, notification levels, and read state apply. Self-mentions and repeated updates stay quiet.
++- Send a channel post addressed only to people without starting an agent task. Hosts without user mention support keep the agent picker.
 diff --git a/docs/architecture/channels-and-messaging.md b/docs/architecture/channels-and-messaging.md
-index e4c648d67..62c37a0e0 100644
+index e4c648d67..798c294cf 100644
 --- a/docs/architecture/channels-and-messaging.md
 +++ b/docs/architecture/channels-and-messaging.md
+@@ -67,7 +67,7 @@ parts to other agents thus notifies once, at its end. The desktop reads the agen
+ notification only when a reply is new, and it reads no channel list for a server whose replies
+ cannot notify. The title of a prompt, an approval or
+ a takeover on a channel thread names the agent and the channel (`notification.channelTitle`), and a
+-click opens the channel. The phone gets no channel reply notification. For a phone that sends
++click opens the channel. The phone gets no general channel reply notification; explicit user mentions use the path below. For a phone that sends
+ `channel-attention-v1`, the host names the channel in the title of a prompt, an approval or a
+ takeover on a channel thread (`PushNotificationService` reads `HostService.channelForThread`), and a
+ tap opens the channel. An older phone gets the agent name as the title, as before.
 @@ -265,8 +265,8 @@ them. A lead change does not move a task that already has an owner. The member p
  Channel tools retrieve history, assign a child task, transfer ownership, and report results. The
  runtime supplies channel and caller identity. A child keeps its parent owner; a transfer changes it.
@@ -13,6 +73,109 @@ index e4c648d67..62c37a0e0 100644
  
  An agent can also give work to a channel from another conversation, such as its direct chat with
  the user. `list_channels` lists the open channels with their lead and members.
+@@ -854,3 +854,31 @@ image shows its own thumbnail, every other file shows the file icon, and the mes
+ a file in the share sheet. The thumbnail reads the attachment through the query key the chat uses,
+ so a file already read in a message is not fetched again. The editor changes the text, removes the
+ files the message already has, and adds new ones.
++
++### User mentions
++
++The channel composer's `@` list includes enabled server members, including offline members, when
++the host advertises `user-mentions-v1` (protocol 9 only). Older hosts keep the agent picker.
++A selected person is stored as `@[Name](user:memberId)` (URI-encoded when required), so a renamed
++member or two people with the same name cannot redirect a notification. A message addressed only
++to people is stored without an agent task. Mixing person and agent tags still addresses the named
++agents. A mention elsewhere in a message does not change agent routing.
++
++Desktop and browser clients read full channel pages after channel changes, using the existing
++read route. They notify the authenticated member whose ID the tag names, after a streamed message
++finishes, including tags beyond the sidebar preview. Each reader keeps a sequence baseline and
++pending streaming messages; initial history, self-mentions, archived channels and duplicate updates
++stay quiet. Clicks open the channel. Muting a server or choosing no notifications prevents alerts;
++focused windows follow the existing notification policy. Preview text uses the desktop redactor
++and preview switch; the browser shows a fixed message.
++
++The host also tracks mentions for registered iOS and Android phones that advertise
++`user-mentions-v1`. It uses the same permitted channel history, checks the member's active status,
++read cursor and current channel visibility again before sending, then sends through the existing
++encrypted relay. The server notification level and mute apply; mentions also notify at "needs me".
++A recently used desktop keeps the phone quiet. A phone on screen holds mentions until it goes away
++or disconnects, and receives only those still unread. A Live Activity does not replace a user
++mention. Native notification data carries the channel ID, including posts without an agent thread,
++so foreground suppression, grouping and taps address the channel. Old phone registrations receive
++no mention payload. Host restarts set a baseline rather than replay old mentions.
++Older clients keep the tag as readable message text; no released Team API codec changes.
+diff --git a/packages/contracts/src/chat-tag-references.ts b/packages/contracts/src/chat-tag-references.ts
+index a19965854..e53f11bf8 100644
+--- a/packages/contracts/src/chat-tag-references.ts
++++ b/packages/contracts/src/chat-tag-references.ts
+@@ -11,7 +11,7 @@
+  * the name. Message bodies are stored as written, so an older app reading a newer message is a
+  * real case, and it stays readable.
+  */
+-export type ChatTagKind = "agent" | "skill" | "mcp" | "quote" | "tab" | "thread";
++export type ChatTagKind = "agent" | "user" | "skill" | "mcp" | "quote" | "tab" | "thread";
+ 
+ export interface ChatTagReference {
+   kind: ChatTagKind;
+@@ -21,7 +21,7 @@ export interface ChatTagReference {
+   end: number;
+ }
+ 
+-const CHAT_TAG_REFERENCE_PATTERN = /@\[([^\]\r\n]+)\]\((agent|skill|mcp|quote|tab|thread)(\+uri)?:([^)\r\n]+)\)/gu;
++const CHAT_TAG_REFERENCE_PATTERN = /@\[([^\]\r\n]+)\]\((agent|user|skill|mcp|quote|tab|thread)(\+uri)?:([^)\r\n]+)\)/gu;
+ 
+ /*
+  * Quoted text is any text, and Markdown reads the marker as a link. A bracket, a backslash, a
+@@ -126,22 +126,34 @@ const ADDRESS_SEPARATORS = /^(?:[\s,]|and\b|&|@everyone(?![\p{L}\p{N}_'’-]))*/
+  * puts a quote where the caret is, often before the mention, so "<quote> @A why?" still asks A.
+  * `end` is where the address and the quotes in it stop.
+  */
+-export function leadingAddress(value: string): { mentions: ChatTagReference[]; everyone: boolean; end: number } {
++export function leadingAddress(value: string): {
++  mentions: ChatTagReference[];
++  users: ChatTagReference[];
++  everyone: boolean;
++  end: number;
++} {
+   const mentions: ChatTagReference[] = [];
++  const users: ChatTagReference[] = [];
+   let end = 0;
+   let everyone = false;
+   for (const reference of [...chatTagReferences(value), undefined]) {
+     const gap = value.slice(end, reference?.start);
+     const separators = ADDRESS_SEPARATORS.exec(gap)?.[0] ?? "";
+     everyone ||= separators.toLowerCase().includes(EVERYONE_MENTION);
+-    if ((reference?.kind !== "agent" && reference?.kind !== "quote") || separators.length !== gap.length) break;
++    if (
++      (reference?.kind !== "agent" && reference?.kind !== "quote" && reference?.kind !== "user") ||
++      separators.length !== gap.length
++    )
++      break;
+     if (reference.kind === "agent") mentions.push(reference);
++    else if (reference.kind === "user") users.push(reference);
+     end = reference.end;
+   }
+-  return { mentions, everyone, end };
++  return { mentions, users, everyone, end };
+ }
+ 
+ function chatTagKind(value: string | undefined): ChatTagKind {
++  if (value === "user") return value;
+   if (value === "skill" || value === "mcp" || value === "quote" || value === "tab" || value === "thread") return value;
+   return "agent";
+ }
+@@ -224,8 +236,8 @@ function fileQuoteHeading(file: FileQuoteTarget): string {
+ }
+ 
+ /** What the provider reads in place of a marker. A name alone would not say what it names. */
+-function expandedChatTag(kind: "agent" | "skill" | "mcp", name: string): string {
+-  if (kind === "agent") return `@${name}`;
++function expandedChatTag(kind: "agent" | "user" | "skill" | "mcp", name: string): string {
++  if (kind === "agent" || kind === "user") return `@${name}`;
+   return kind === "mcp" ? `${name} (MCP server)` : `${name} (skill)`;
+ }
+ 
 diff --git a/packages/contracts/src/ipc-chat-channels.ts b/packages/contracts/src/ipc-chat-channels.ts
 index ca26cb266..3272a7257 100644
 --- a/packages/contracts/src/ipc-chat-channels.ts
@@ -30,6 +193,557 @@ index ca26cb266..3272a7257 100644
  /**
   * The reason a run stops at `CHANNEL_ASSIGNMENT_LIMIT`. Saved tasks and every host version carry this
   * exact English, so a screen compares it to show its own text. Do not change it.
+diff --git a/packages/contracts/src/team-protocol/current.ts b/packages/contracts/src/team-protocol/current.ts
+index 7a25b8b4a..34371674a 100644
+--- a/packages/contracts/src/team-protocol/current.ts
++++ b/packages/contracts/src/team-protocol/current.ts
+@@ -148,6 +148,7 @@ import { THREAD_MESSAGE_SEARCH_CAPABILITY } from "./thread-message-search-v1";
+ import { TEAM_UI_BLOCK_AUTO_ANSWER_CAPABILITY } from "./ui-block-auto-answer-v1";
+ import { TEAM_UI_BLOCK_VAULT_CAPABILITY } from "./ui-block-vault-v1";
+ import { TEAM_UI_BLOCKS_CAPABILITY } from "./ui-blocks-v1";
++import { USER_MENTIONS_CAPABILITY } from "./user-mentions-v1";
+ import { TEAM_OPEN_PROVIDERS_CAPABILITY } from "./v8";
+ import { TEAM_LONG_CAPABILITY_LISTS_CAPABILITY, TEAM_PROTOCOL_V9_CAPABILITIES } from "./v9";
+ import { VAULT_IMPORT_CAPABILITY } from "./vault-import-v1";
+@@ -354,6 +355,7 @@ export {
+   TEAM_UI_BLOCK_VAULT_CAPABILITY,
+   TEAM_UI_BLOCKS_CAPABILITY,
+   THREAD_MESSAGE_SEARCH_CAPABILITY,
++  USER_MENTIONS_CAPABILITY,
+   VAULT_CAPABILITY,
+   VAULT_IMPORT_CAPABILITY,
+   VAULT_V2_CAPABILITY,
+@@ -520,6 +522,7 @@ export const TEAM_CURRENT_CAPABILITIES = [
+   BROWSER_EGRESS_CAPABILITY,
+   CODEX_API_KEY_CAPABILITY,
+   CHANNEL_ISOLATION_CAPABILITY,
++  USER_MENTIONS_CAPABILITY,
+   AGENT_THREAD_PAGES_CAPABILITY,
+   TEAM_ANY_FILE_ATTACHMENTS_CAPABILITY,
+   ROUTINE_RUN_PLACE_CAPABILITY,
+@@ -797,6 +800,7 @@ export const TEAM_PROTOCOL_V9_ONLY_CAPABILITIES: ReadonlySet<string> = new Set<T
+   BROWSER_EGRESS_CAPABILITY,
+   CODEX_API_KEY_CAPABILITY,
+   CHANNEL_ISOLATION_CAPABILITY,
++  USER_MENTIONS_CAPABILITY,
+   AGENT_THREAD_PAGES_CAPABILITY,
+   TEAM_ANY_FILE_ATTACHMENTS_CAPABILITY,
+   ROUTINE_RUN_PLACE_CAPABILITY,
+diff --git a/packages/contracts/src/team-protocol/user-mentions-v1.ts b/packages/contracts/src/team-protocol/user-mentions-v1.ts
+new file mode 100644
+index 000000000..f3177ca32
+--- /dev/null
++++ b/packages/contracts/src/team-protocol/user-mentions-v1.ts
+@@ -0,0 +1,10 @@
++/**
++ * Optional channel user mentions. Message text can contain `@[Name](user:memberId)` (or its
++ * `user+uri` encoding). A post addressed only to people starts no agent task. Clients notify the
++ * authenticated named member from full channel history. Phones with this capability also receive
++ * sealed push content with kind `mention` and `channelId`; `agentId` is empty for a person-written
++ * message and `threadId` is null. A tap opens the channel. No Team API field or route is added.
++ * The picker stays hidden on a host without this capability, whose routing still treats every
++ * person-written channel message as an agent request.
++ */
++export const USER_MENTIONS_CAPABILITY = "user-mentions-v1";
+diff --git a/packages/i18n/src/messages/en/composer.ts b/packages/i18n/src/messages/en/composer.ts
+index 8905d2c45..700982d13 100644
+--- a/packages/i18n/src/messages/en/composer.ts
++++ b/packages/i18n/src/messages/en/composer.ts
+@@ -1,6 +1,8 @@
+ import { defineMessages } from "../../message";
+ 
+ export const messages = defineMessages("composer", {
++  "composer.picker.option.user": "Mention person {name}",
++  "composer.picker.section.users": "People",
+   "composer.queueEdit.body": "You are editing a queued message. Save or cancel the edit to let it run.",
+   "composer.queueEdit.cancel": "Cancel edit",
+   "composer.providerWait.offlineTitle": "No internet connection",
+diff --git a/packages/i18n/src/messages/en/notification.ts b/packages/i18n/src/messages/en/notification.ts
+index e7df7635f..5e47644bf 100644
+--- a/packages/i18n/src/messages/en/notification.ts
++++ b/packages/i18n/src/messages/en/notification.ts
+@@ -1,6 +1,7 @@
+ import { defineMessages } from "../../message";
+ 
+ export const messages = defineMessages("notification", {
++  "notification.userMention": "Mentioned you.",
+   // Desktop notifications, raised by the main process while the window may be closed, and browser
+   // notifications, raised by the web client while its tab is open.
+   "notification.needsInput": "Needs your input.",
+diff --git a/packages/i18n/untranslated.json b/packages/i18n/untranslated.json
+index d935e3534..82769dda3 100644
+--- a/packages/i18n/untranslated.json
++++ b/packages/i18n/untranslated.json
+@@ -1,4 +1,7 @@
+ {
++  "composer.picker.section.users": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
++  "composer.picker.option.user": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
++  "notification.userMention": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+   "account.login.companyDescription": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+   "account.login.companyOpenAgain": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+   "account.login.companyOpenFailed": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+diff --git a/packages/team-client/src/channel-notifications.ts b/packages/team-client/src/channel-notifications.ts
+index 03612bb1c..1b239c932 100644
+--- a/packages/team-client/src/channel-notifications.ts
++++ b/packages/team-client/src/channel-notifications.ts
+@@ -1,3 +1,4 @@
++import { chatTagReferences } from "@openbot/contracts/chat-tag-references";
+ import type {
+   ChannelPreview,
+   ChannelSummary,
+@@ -14,6 +15,11 @@ export interface ChannelNotificationContent {
+   agentId: string;
+ }
+ 
++export interface ChannelMentionNotificationContent extends ChannelNotificationContent {
++  messageId: string;
++  sequence: number;
++}
++
+ export interface ChannelNotificationOptions {
+   agents: readonly ClientAgentSummary[];
+   translate: AppTranslate;
+@@ -95,3 +101,105 @@ export function channelForThread(
+   const channel = channels.find((candidate) => candidate.threads?.some((thread) => thread.threadId === threadId));
+   return channel ? { id: channel.id, name: channel.name } : null;
+ }
++
++/**
++ * Reads full messages for mentions: the sidebar preview is truncated and has no stable member IDs.
++ * The first list is a baseline. Later lists inspect every new page, including a streamed message
++ * when it completes. Reading history does not mark it read or change the released wire contract.
++ */
++export interface ChannelMentionReadOptions {
++  readerId: string;
++  readPage: (
++    input: import("@openbot/contracts/ipc").ChannelReadInput,
++  ) => Promise<import("@openbot/contracts/ipc").ChannelPage>;
++  translate: AppTranslate;
++  redact: ((text: string) => string) | null;
++}
++
++export class ChannelMentionNotifications {
++  readonly #channels = new Map<string, { through: number; pending: Set<number>; stamp: string }>();
++
++  #initialized = false;
++  #reading: Promise<void> = Promise.resolve();
++
++  read(
++    channels: readonly ChannelSummary[],
++    options: ChannelMentionReadOptions,
++  ): Promise<ChannelMentionNotificationContent[]> {
++    const result = this.#reading.then(() => this.#read(channels, options));
++    this.#reading = result.then(
++      () => undefined,
++      () => undefined,
++    );
++    return result;
++  }
++
++  async #read(
++    channels: readonly ChannelSummary[],
++    options: ChannelMentionReadOptions,
++  ): Promise<ChannelMentionNotificationContent[]> {
++    const notifications: ChannelMentionNotificationContent[] = [];
++    const staged = new Map(this.#channels);
++    const ids = new Set(channels.map((channel) => channel.id));
++    for (const id of staged.keys()) if (!ids.has(id)) staged.delete(id);
++    for (const channel of channels) {
++      const last = channel.lastMessage;
++      const stamp = JSON.stringify([channel.revision, last]);
++      const previous =
++        this.#channels.get(channel.id) ??
++        (this.#initialized ? { through: 0, pending: new Set<number>(), stamp: "" } : undefined);
++      if (previous?.stamp === stamp) continue;
++      if (!previous && !last) {
++        staged.set(channel.id, { through: 0, pending: new Set(), stamp });
++        continue;
++      }
++      const page = await options.readPage({ channelId: channel.id });
++      const pending = new Set(previous?.pending);
++      const messages = [...page.messages];
++      let cursor = page.olderCursor;
++      const floor = previous ? Math.min(previous.through, ...pending) : page.throughSequence;
++      // The first page may contain only a single long message. Read down to the previous baseline.
++      while (previous && cursor !== null && cursor > floor) {
++        const older = await options.readPage({ channelId: channel.id, beforeSequence: cursor });
++        messages.push(...older.messages);
++        if (older.olderCursor !== null && older.olderCursor >= cursor)
++          throw new Error("Channel history did not advance.");
++        cursor = older.olderCursor;
++      }
++      const found: ChannelMentionNotificationContent[] = [];
++      for (const entry of messages.sort((a, b) => a.sequence - b.sequence)) {
++        if (!previous || (entry.sequence <= previous.through && !pending.has(entry.sequence))) continue;
++        if (entry.message.status === "streaming") {
++          pending.add(entry.sequence);
++          continue;
++        }
++        pending.delete(entry.sequence);
++        if (
++          channel.archived ||
++          entry.superseded ||
++          entry.author.id === options.readerId ||
++          entry.author.kind === "coordinator"
++        )
++          continue;
++        if (!chatTagReferences(entry.message.text).some((tag) => tag.kind === "user" && tag.id === options.readerId))
++          continue;
++        found.push({
++          title: options.translate("notification.channelTitle", { agent: entry.author.name, channel: channel.name }),
++          body:
++            (options.redact && plainPreview(options.redact(entry.message.text))) ||
++            options.translate("notification.userMention"),
++          channelId: channel.id,
++          messageId: entry.id,
++          sequence: entry.sequence,
++          agentId: entry.author.kind === "agent" ? entry.author.id : "",
++        });
++      }
++      staged.set(channel.id, { through: page.throughSequence, pending, stamp });
++      notifications.push(...found);
++    }
++    this.#initialized = true;
++    this.#channels.clear();
++    for (const [id, value] of staged) this.#channels.set(id, value);
++    return notifications;
++  }
++}
+diff --git a/packages/team-client/src/push-notification-seal.ts b/packages/team-client/src/push-notification-seal.ts
+index ef302a04d..a26660d82 100644
+--- a/packages/team-client/src/push-notification-seal.ts
++++ b/packages/team-client/src/push-notification-seal.ts
+@@ -16,7 +16,7 @@ export interface PushNotificationKeys {
+   tag: Uint8Array;
+ }
+ 
+-export type PushNotificationKind = "reply" | "failed" | "input" | "approval" | "browser";
++export type PushNotificationKind = "reply" | "failed" | "input" | "approval" | "browser" | "mention";
+ 
+ /** What the extension shows, and what the app opens when the user taps the notification. */
+ export interface PushNotificationContent {
+@@ -24,6 +24,8 @@ export interface PushNotificationContent {
+   agentId: string;
+   threadId: string | null;
+   kind: PushNotificationKind;
++  /** Present only for user-mentions-v1 peers. A person-written post has no agent thread. */
++  channelId?: string;
+   title: string;
+   body: string;
+ }
+diff --git a/packages/ui/src/data.ts b/packages/ui/src/data.ts
+index d1b04c719..643c15575 100644
+--- a/packages/ui/src/data.ts
++++ b/packages/ui/src/data.ts
+@@ -329,6 +329,13 @@ export interface AgentProfile {
+ }
+ 
+ /** The agent fields that the composer, the queue, rich text and the browser dock read. */
++/** A server member that can receive a mention. IDs are scoped to this server. */
++export interface ComposerUser {
++  id: string;
++  name: string;
++  username: string;
++}
++
+ export type ComposerAgent = Pick<
+   AgentProfile,
+   "id" | "name" | "title" | "description" | "avatarSeed" | "avatarHue" | "avatarColor" | "avatarUrl"
+diff --git a/packages/ui/src/features/conversation/ComposerEditor.tsx b/packages/ui/src/features/conversation/ComposerEditor.tsx
+index 7bd514f69..443abef4f 100644
+--- a/packages/ui/src/features/conversation/ComposerEditor.tsx
++++ b/packages/ui/src/features/conversation/ComposerEditor.tsx
+@@ -17,7 +17,14 @@ import {
+   Show,
+   untrack,
+ } from "solid-js";
+-import type { ComposerAgent, ComposerBrowserTab, ComposerMcpServer, ComposerSkill, ComposerThread } from "../../data";
++import type {
++  ComposerAgent,
++  ComposerBrowserTab,
++  ComposerMcpServer,
++  ComposerSkill,
++  ComposerThread,
++  ComposerUser,
++} from "../../data";
+ import { useText } from "../../text";
+ import { AgentAvatar } from "../agents/AgentAvatar";
+ import { AnchoredTooltip } from "./AnchoredTooltip";
+@@ -63,6 +70,7 @@ import {
+   createSkillToken,
+   createTabToken,
+   createThreadToken,
++  createUserMentionToken,
+   type EditorTagSources,
+   MENTION_PATTERN,
+   renderEditorValue,
+@@ -83,6 +91,7 @@ import { isSendShortcutKey, type SendShortcut } from "./send-shortcut";
+ interface ComposerEditorProps {
+   agentId: string | undefined;
+   agents: ComposerAgent[];
++  users?: ComposerUser[] | undefined;
+   skills?: ComposerSkill[] | undefined;
+   /** The host's MCP servers, offered by the same `$` the skills answer. */
+   mcpServers?: ComposerMcpServer[] | undefined;
+@@ -204,6 +213,10 @@ export function ComposerEditor(props: ComposerEditorProps) {
+     { mount: undefined, bottom: 0 },
+     { equals: (previous, next) => previous.mount === next.mount && previous.bottom === next.bottom },
+   );
++  const matchingUsers = createMemo(() => {
++    const query = mention()?.query.trim().toLocaleLowerCase() ?? "";
++    return (props.users ?? []).filter((user) => `${user.name} ${user.username}`.toLocaleLowerCase().includes(query));
++  });
+   const matchingAgents = createMemo(() => {
+     const others = props.agents.filter((agent) => agent.id !== props.agentId);
+     return rankAgentMentions(others, mention()?.query ?? "");
+@@ -280,6 +293,11 @@ export function ComposerEditor(props: ComposerEditorProps) {
+       ].filter((section) => section.options.length > 0);
+     if (trigger !== "@") return [];
+     const sections: PickerSection[] = [
++      {
++        id: "users",
++        title: "composer.picker.section.users",
++        options: matchingUsers().map((user) => ({ type: "user", user })),
++      },
+       {
+         id: "agents",
+         title: "composer.picker.section.agents",
+@@ -393,6 +411,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+       agentId: props.agentId,
+       value: props.value,
+       agents: props.agents,
++      users: props.users ?? [],
+       skills: props.skills ?? [],
+       mcpServers: props.mcpServers ?? [],
+       attachments: props.attachments ?? [],
+@@ -521,6 +540,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+       shown: dictating(),
+       value: props.value,
+       agents: props.agents,
++      users: props.users ?? [],
+       skills: props.skills ?? [],
+       mcpServers: props.mcpServers ?? [],
+       attachments: props.attachments ?? [],
+@@ -610,6 +630,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+   function tagSources(): EditorTagSources {
+     return {
+       agents: props.agents,
++      users: props.users ?? [],
+       skills: props.skills ?? [],
+       mcpServers: props.mcpServers ?? [],
+       attachments: props.attachments ?? [],
+@@ -705,19 +726,21 @@ export function ComposerEditor(props: ComposerEditorProps) {
+     if (!range) return;
+     range.deleteContents();
+     const token =
+-      option.type === "agent"
+-        ? createMentionToken(option.agent)
+-        : option.type === "everyone"
+-          ? document.createTextNode(EVERYONE_MENTION)
+-          : option.type === "skill"
+-            ? createSkillToken(option.skill)
+-            : option.type === "mcp"
+-              ? createMcpToken(option.server)
+-              : option.type === "tab"
+-                ? createTabToken(option.tab)
+-                : option.type === "thread"
+-                  ? createThreadToken(option.thread)
+-                  : createAttachmentToken(option.attachment, attachmentTokenActions);
++      option.type === "user"
++        ? createUserMentionToken(option.user)
++        : option.type === "agent"
++          ? createMentionToken(option.agent)
++          : option.type === "everyone"
++            ? document.createTextNode(EVERYONE_MENTION)
++            : option.type === "skill"
++              ? createSkillToken(option.skill)
++              : option.type === "mcp"
++                ? createMcpToken(option.server)
++                : option.type === "tab"
++                  ? createTabToken(option.tab)
++                  : option.type === "thread"
++                    ? createThreadToken(option.thread)
++                    : createAttachmentToken(option.attachment, attachmentTokenActions);
+     const trailingSpace = document.createTextNode(" ");
+     range.insertNode(trailingSpace);
+     range.insertNode(token);
+@@ -1195,7 +1218,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+                     >
+                       {option.type === "agent" ? (
+                         <AgentAvatar agent={option.agent} />
+-                      ) : option.type === "everyone" ? (
++                      ) : option.type === "everyone" || option.type === "user" ? (
+                         <span class="mention-picker-skill-icon" aria-hidden="true">
+                           <UsersRound />
+                         </span>
+diff --git a/packages/ui/src/features/conversation/RichMessageText.tsx b/packages/ui/src/features/conversation/RichMessageText.tsx
+index d6b840c45..7f99528f4 100644
+--- a/packages/ui/src/features/conversation/RichMessageText.tsx
++++ b/packages/ui/src/features/conversation/RichMessageText.tsx
+@@ -61,7 +61,7 @@ const UNAVAILABLE_TAG_LABELS = {
+  * keeps the name it had when the message was sent, as an MCP server does: the message records what
+  * the user asked.
+  */
+-type UnavailableTagKind = Exclude<ChatTagKind, "quote" | "tab" | "thread">;
++type UnavailableTagKind = Exclude<ChatTagKind, "user" | "quote" | "tab" | "thread">;
+ 
+ export function RichMessageText(props: RichMessageTextProps) {
+   const { t } = useText();
+@@ -468,7 +468,9 @@ function semanticTagParts(body: string, agents: ComposerAgent[], skills: Compose
+   let cursor = 0;
+   for (const reference of references) {
+     if (reference.start > cursor) parts.push({ text: body.slice(cursor, reference.start) });
+-    if (reference.kind === "agent") {
++    if (reference.kind === "user") {
++      parts.push({ text: `@${reference.name}` });
++    } else if (reference.kind === "agent") {
+       const agent = agents.find((candidate) => candidate.id === reference.id);
+       parts.push(agent ? { text: agent.name, agent } : { text: reference.name, unavailableKind: "agent" });
+     } else if (reference.kind === "mcp") {
+diff --git a/packages/ui/src/features/conversation/composer-dom.ts b/packages/ui/src/features/conversation/composer-dom.ts
+index 0e7e363b0..19d29da88 100644
+--- a/packages/ui/src/features/conversation/composer-dom.ts
++++ b/packages/ui/src/features/conversation/composer-dom.ts
+@@ -64,7 +64,8 @@ function serializeNode(node: Node): string {
+   }
+   const mentionId = node.dataset.mentionId;
+   const mentionName = node.dataset.mentionName;
+-  if (mentionId && mentionName) return serializeChatTagReference("agent", mentionName, mentionId);
++  if (mentionId && mentionName)
++    return serializeChatTagReference(node.dataset.kind === "user" ? "user" : "agent", mentionName, mentionId);
+   const skillId = node.dataset.skillId;
+   const skillName = node.dataset.skillName;
+   if (skillId && skillName) return serializeChatTagReference("skill", skillName, skillId);
+diff --git a/packages/ui/src/features/conversation/composer-picker.ts b/packages/ui/src/features/conversation/composer-picker.ts
+index 6fee827d3..a77151d55 100644
+--- a/packages/ui/src/features/conversation/composer-picker.ts
++++ b/packages/ui/src/features/conversation/composer-picker.ts
+@@ -1,7 +1,14 @@
+ import type { DraftAttachment } from "@openbot/contracts/ipc";
+ import type { AppTextKey } from "@openbot/i18n";
+ import { Bot, File, Folder, Plug, type Puzzle, ShieldCheck, Store, UsersRound } from "@openbot/ui";
+-import type { ComposerAgent, ComposerBrowserTab, ComposerMcpServer, ComposerSkill, ComposerThread } from "../../data";
++import type {
++  ComposerAgent,
++  ComposerBrowserTab,
++  ComposerMcpServer,
++  ComposerSkill,
++  ComposerThread,
++  ComposerUser,
++} from "../../data";
+ import type { TextValue } from "../../text";
+ import { browserDisplayUrl } from "../browser/browser-suggestions";
+ 
+@@ -18,6 +25,7 @@ export interface PickerFrame {
+ 
+ export type PickerOption =
+   | { type: "agent"; agent: ComposerAgent }
++  | { type: "user"; user: ComposerUser }
+   /** Addresses every member of a channel. It inserts the text `@everyone`. */
+   | { type: "everyone" }
+   /** `showSlug` is set when another listed skill has the same name: the slug tells them apart. */
+@@ -40,6 +48,7 @@ export interface PickerSection {
+ }
+ 
+ export function pickerOptionKey(option: PickerOption): string {
++  if (option.type === "user") return `user:${option.user.id}`;
+   if (option.type === "agent") return `agent:${option.agent.id}`;
+   if (option.type === "everyone") return "everyone";
+   if (option.type === "skill") return `skill:${option.skill.skillId}`;
+@@ -49,6 +58,7 @@ export function pickerOptionKey(option: PickerOption): string {
+ }
+ 
+ export function pickerOptionText(option: PickerOption, t: TextValue["t"]): string {
++  if (option.type === "user") return t("composer.picker.option.user", { name: option.user.name });
+   if (option.type === "agent") return t("composer.picker.option.agent", { name: option.agent.name });
+   if (option.type === "everyone") return t("composer.picker.everyone");
+   if (option.type === "skill") {
+@@ -63,6 +73,7 @@ export function pickerOptionText(option: PickerOption, t: TextValue["t"]): strin
+ }
+ 
+ export function pickerOptionName(option: PickerOption, t: TextValue["t"]): string {
++  if (option.type === "user") return option.user.name;
+   if (option.type === "agent") return option.agent.name;
+   if (option.type === "everyone") return t("composer.picker.everyone");
+   if (option.type === "skill") return option.skill.name;
+@@ -76,6 +87,7 @@ export function pickerOptionDescription(
+   t: TextValue["t"],
+   format: TextValue["format"],
+ ): string | undefined {
++  if (option.type === "user") return option.user.username;
+   if (option.type === "everyone") return t("composer.picker.everyoneDescription");
+   if (option.type === "attachment") return format.fileSize(option.attachment.size);
+   if (option.type === "skill") return skillDescription(option.skill);
+@@ -145,7 +157,7 @@ export function pickerOptionBadge(
+   t: TextValue["t"],
+ ): { label: string; icon?: typeof Puzzle } | null {
+   // The section title says that a row is a tab, so a tab row needs no badge.
+-  if (option.type === "tab") return null;
++  if (option.type === "tab" || option.type === "user") return null;
+   if (option.type === "thread") return { label: t(THREAD_STATE_LABELS[threadStateLabel(option.thread)]) };
+   if (option.type === "agent") return { label: t("composer.picker.badge.agent"), icon: Bot };
+   if (option.type === "everyone") return { label: t("composer.picker.badge.channel"), icon: UsersRound };
+diff --git a/packages/ui/src/features/conversation/composer-tokens.ts b/packages/ui/src/features/conversation/composer-tokens.ts
+index 8f619d6c0..a7c65b696 100644
+--- a/packages/ui/src/features/conversation/composer-tokens.ts
++++ b/packages/ui/src/features/conversation/composer-tokens.ts
+@@ -3,7 +3,14 @@ import type { DraftAttachment } from "@openbot/contracts/ipc";
+ import { referenceChipClasses } from "@openbot/ui/reference-chip";
+ import { usesTouchLayout } from "@openbot/ui/utils";
+ import { createStaticAvatarSvg } from "../../bloub-avatar";
+-import type { ComposerAgent, ComposerBrowserTab, ComposerMcpServer, ComposerSkill, ComposerThread } from "../../data";
++import type {
++  ComposerAgent,
++  ComposerBrowserTab,
++  ComposerMcpServer,
++  ComposerSkill,
++  ComposerThread,
++  ComposerUser,
++} from "../../data";
+ import { currentText } from "../../text";
+ import { appendAttachmentReferenceVisual } from "./AttachmentReference";
+ import { tabTitle } from "./composer-picker";
+@@ -106,6 +113,19 @@ export function syncAttachmentTokens(
+   }
+ }
+ 
++export function createUserMentionToken(user: ComposerUser): HTMLSpanElement {
++  const token = document.createElement("span");
++  token.className = `composer-mention-token ${referenceChipClasses.root}`;
++  token.contentEditable = "false";
++  token.dataset.kind = "user";
++  token.dataset.mentionId = user.id;
++  token.dataset.mentionName = user.name;
++  token.title = user.username;
++  token.textContent = `@${user.name}`;
++  token.setAttribute("aria-label", currentText().t("composer.picker.option.user", { name: user.name }));
++  return token;
++}
++
+ export function createMentionToken(agent: ComposerAgent): HTMLSpanElement {
+   const token = document.createElement("span");
+   token.className = `composer-mention-token ${referenceChipClasses.root}`;
+@@ -414,6 +434,7 @@ export function syncSkillTokens(editor: HTMLDivElement, skills: ComposerSkill[])
+ 
+ /** What the editor draws its tags from. */
+ export interface EditorTagSources {
++  users?: ComposerUser[];
+   agents: ComposerAgent[];
+   skills: ComposerSkill[];
+   mcpServers: ComposerMcpServer[];
+@@ -437,6 +458,12 @@ export function renderEditorValue(
+     const semanticReference = chatTagReferences(match[0])[0];
+     const name = semanticReference?.name ?? match[1] ?? "Agent";
+     const target = semanticReference ? `${semanticReference.kind}:${semanticReference.id}` : (match[2] ?? "");
++    if (semanticReference?.kind === "user") {
++      const user = sources.users?.find((candidate) => candidate.id === semanticReference.id);
++      editor.append(createUserMentionToken(user ?? { id: semanticReference.id, name, username: name }));
++      cursor = index + match[0].length;
++      continue;
++    }
+     if (target.startsWith("attachment:")) {
+       const id = target.slice("attachment:".length);
+       const attachment = attachments.find((candidate) => candidate.id === id);
 diff --git a/src/backend/agent-service.ts b/src/backend/agent-service.ts
 index 86e62d3eb..c0bd5aa51 100644
 --- a/src/backend/agent-service.ts
@@ -126,7 +840,7 @@ index 78a0663e7..a9de8f2e6 100644
  
    /** Whether a team member on another computer sent a message of this turn. */
 diff --git a/src/backend/channel-service.ts b/src/backend/channel-service.ts
-index 7d2a9440c..0400d0ac8 100644
+index 7d2a9440c..478178041 100644
 --- a/src/backend/channel-service.ts
 +++ b/src/backend/channel-service.ts
 @@ -128,6 +128,11 @@ export interface ChannelHooks {
@@ -141,7 +855,23 @@ index 7d2a9440c..0400d0ac8 100644
    /** The schedule routines of the channels, for the routine tools. Omitted, those tools fail. */
    routines?: ChannelRoutineToolPort;
    error(error: unknown): void;
-@@ -3266,6 +3271,24 @@ export class ChannelService {
+@@ -891,6 +896,15 @@ export class ChannelService {
+         const open = allTasks.filter((task) => !terminal(task));
+         const eligible = this.eligibleMembers(current);
+         const recipients = this.#recipients(eligible, text, command.recipientAgentId);
++        const address = leadingAddress(text);
++        // A message addressed only to people is a post, not an agent assignment.
++        if (address.users.length && !recipients.length && !address.everyone) {
++          const message = this.message(current.id, null, { kind: "member", ...actor }, text, id);
++          message.message.replyToMessageId = command.replyToMessageId;
++          if (committed) message.message.attachments = committed.attachments;
++          const result = yield* channelSync(() => this.store.update(current, { messages: [message] }, operationId));
++          return { current, continued: [], affected: [], resumed: [], message, result, tasks: [] };
++        }
+         const continues =
+           /^(?:also|instead|actually|please change|change that|correction|continue|resume|go on|keep going|yes|no|use that|make it)\b/iu.test(
+             text.trim(),
+@@ -3266,6 +3280,24 @@ export class ChannelService {
      return person !== null && !(this.hooks.remotePerson?.(person.id) ?? false);
    });
  
@@ -166,6 +896,27 @@ index 7d2a9440c..0400d0ac8 100644
    readonly tool = Effect.fn("ChannelService.tool")(function* (
      this: ChannelService,
      channelId: string,
+diff --git a/src/backend/channel-store.ts b/src/backend/channel-store.ts
+index b091c48d8..b5eca74c9 100644
+--- a/src/backend/channel-store.ts
++++ b/src/backend/channel-store.ts
+@@ -981,6 +981,16 @@ export class ChannelStore {
+     }
+   }
+ 
++  /** Whether this message is beyond the member's committed channel read position. */
++  isUnread(channelId: string, memberId: string, sequence: number): boolean {
++    const row = databaseRow(
++      this.database.connection
++        .prepare("SELECT through_sequence FROM projection_channel_reads WHERE channel_id = ? AND member_id = ?")
++        .get(channelId, memberId),
++    );
++    return sequence > (row ? requiredNumberColumn(row, "through_sequence") : 0);
++  }
++
+   markRead(channelId: string, memberId: string, throughSequence: number, operationId: string): Channel {
+     const maximum = this.page(channelId).throughSequence;
+     if (throughSequence > maximum) throw new Error("The read position exceeds the channel history.");
 diff --git a/src/main/application-services.ts b/src/main/application-services.ts
 index 4b1e26470..930f328a6 100644
 --- a/src/main/application-services.ts
@@ -178,8 +929,95 @@ index 4b1e26470..930f328a6 100644
      // The delete also clears the agent from workflow nodes, so the editors of those workflows load
      // the new graph. `workflowStore` is built later, after the agent service.
      deleteWithRevokedApproval: (agentId, remove) =>
+diff --git a/src/main/channel-push-notifications.ts b/src/main/channel-push-notifications.ts
+new file mode 100644
+index 000000000..98f60cf00
+--- /dev/null
++++ b/src/main/channel-push-notifications.ts
+@@ -0,0 +1,68 @@
++import type { ChannelPage, ChannelReadInput, ChannelSummary } from "@openbot/contracts/ipc";
++import type { AppTranslate } from "@openbot/i18n";
++import {
++  type ChannelMentionNotificationContent,
++  ChannelMentionNotifications,
++} from "@openbot/team-client/channel-notifications";
++
++export interface ChannelPushViewer {
++  memberId: string;
++  protocol: number;
++  capabilities: ReadonlySet<string>;
++}
++
++/** The same visibility and read rules as the authenticated channel routes, without changing history. */
++export interface ChannelPushHistory {
++  list(viewer: ChannelPushViewer): ChannelSummary[];
++  page(viewer: ChannelPushViewer, input: ChannelReadInput): ChannelPage;
++  unread(memberId: string, channelId: string, sequence: number): boolean;
++}
++
++/** Keeps the mention baseline of one phone, independently of the desktop and other phones. */
++export class ChannelPushReader {
++  readonly #tracker = new ChannelMentionNotifications();
++  readonly #revisions = new Map<string, number>();
++  readonly #history: ChannelPushHistory;
++  readonly #viewer: ChannelPushViewer;
++
++  constructor(history: ChannelPushHistory, viewer: ChannelPushViewer, translate: AppTranslate) {
++    this.#history = history;
++    this.#viewer = viewer;
++    // Capture the startup pages now, before a new message arrives. An offline phone must never
++    // receive historical mentions just because its saved registration was loaded after a restart.
++    void this.refresh(translate, null).catch(() => undefined);
++  }
++
++  refresh(
++    translate: AppTranslate,
++    redact: ((text: string) => string) | null,
++  ): Promise<ChannelMentionNotificationContent[]> {
++    const channels = this.#history.list(this.#viewer);
++    const pages = new Map(
++      channels
++        .filter((channel) => this.#revisions.get(channel.id) !== channel.revision)
++        .map((channel) => [channel.id, this.#history.page(this.#viewer, { channelId: channel.id })]),
++    );
++    this.#revisions.clear();
++    for (const channel of channels) this.#revisions.set(channel.id, channel.revision);
++    return this.#tracker.read(channels, {
++      readerId: this.#viewer.memberId,
++      translate,
++      redact,
++      readPage: async (input) => {
++        const page = input.beforeSequence === undefined ? pages.get(input.channelId) : undefined;
++        return page ?? this.#history.page(this.#viewer, input);
++      },
++    });
++  }
++
++  /** Recheck after an await or a held event: the message can be read, deleted, or hidden by then. */
++  unseen(mention: ChannelMentionNotificationContent): boolean {
++    if (!this.#history.unread(this.#viewer.memberId, mention.channelId, mention.sequence)) return false;
++    const channel = this.#history.list(this.#viewer).find((entry) => entry.id === mention.channelId && !entry.archived);
++    if (!channel) return false;
++    return this.#history
++      .page(this.#viewer, { channelId: mention.channelId, beforeSequence: mention.sequence + 1 })
++      .messages.some((entry) => entry.id === mention.messageId && !entry.superseded);
++  }
++}
+diff --git a/src/main/desktop-notifications.ts b/src/main/desktop-notifications.ts
+index d6bdb2401..f2192494c 100644
+--- a/src/main/desktop-notifications.ts
++++ b/src/main/desktop-notifications.ts
+@@ -21,6 +21,8 @@ export function desktopShowsAgentEvent(
+   enabled: boolean,
+   agentLevels: ReadonlyMap<string, ServerNotificationLevel> | null = null,
+ ): boolean {
++  if (event.type === "channels-changed")
++    return enabled && !!server && !server.notificationsMuted && server.notificationLevel !== "nothing";
+   return desktopAgentEventLevel(event, server, enabled, agentLevels) !== null;
+ }
+ 
 diff --git a/src/main/host-service.ts b/src/main/host-service.ts
-index f0b30dd67..a5148c5af 100644
+index f0b30dd67..a14941584 100644
 --- a/src/main/host-service.ts
 +++ b/src/main/host-service.ts
 @@ -43,6 +43,7 @@ import type {
@@ -190,7 +1028,47 @@ index f0b30dd67..a5148c5af 100644
    conversationMessageSender,
    DEFAULT_REMOTE_CONTROL_POLICY,
    isAvatarColor,
-@@ -2205,6 +2206,13 @@ export class HostService extends EventEmitter<HostEvents> {
+@@ -472,6 +473,39 @@ export class HostService extends EventEmitter<HostEvents> {
+             liveActivityShows: (sessionId, subject, alert, startedAt) =>
+               this.#liveActivityPush?.showsEvent(sessionId, subject, alert, startedAt) ?? false,
+             channelForThread: (threadId) => this.channelForThread(threadId),
++            ...(options.channels
++              ? {
++                  channelHistory: {
++                    list: (viewer) => {
++                      const hidden = this.#api.hiddenAgentIds(viewer.protocol, viewer.capabilities, viewer.memberId);
++                      const admin = canAdministerServer(options.store.getMember(viewer.memberId)?.role ?? "member");
++                      return (
++                        options.channels?.store
++                          .list(viewer.memberId)
++                          .filter(
++                            (channel) =>
++                              admin ||
++                              !channel.members.length ||
++                              channel.members.some((member) => !hidden.has(member.agentId)),
++                          ) ?? []
++                      );
++                    },
++                    page: (viewer, input) => {
++                      if (!options.channels) throw new Error("Channels are unavailable.");
++                      const hidden = this.#api.hiddenAgentIds(viewer.protocol, viewer.capabilities, viewer.memberId);
++                      const page = options.channels.store.page(input.channelId, input.beforeSequence);
++                      return {
++                        ...page,
++                        messages: page.messages.filter(
++                          (message) => message.author.kind !== "agent" || !hidden.has(message.author.id),
++                        ),
++                      };
++                    },
++                    unread: (memberId, channelId, sequence) =>
++                      options.channels?.store.isUnread(channelId, memberId, sequence) ?? false,
++                  },
++                }
++              : {}),
+             logger,
+           })
+         : undefined;
+@@ -2205,7 +2239,22 @@ export class HostService extends EventEmitter<HostEvents> {
      }
    }
  
@@ -202,5 +1080,595 @@ index f0b30dd67..a5148c5af 100644
 +  }
 +
    /** The channel list as the host user reads it, as the IPC list does. Empty without channels. */
++  /** Full channel messages for local mention notifications; this read never marks history read. */
++  readChannelNotificationPage(
++    input: import("@openbot/contracts/ipc").ChannelReadInput,
++  ): import("@openbot/contracts/ipc").ChannelPage {
++    if (!this.#options.channels) throw new Error("Channels are unavailable.");
++    return this.#options.channels.store.page(input.channelId, input.beforeSequence);
++  }
++
    listChannels(): ChannelSummary[] {
      return this.#options.channels?.store.list(this.channelActor().id, true) ?? [];
+   }
+diff --git a/src/main/push-notifications.ts b/src/main/push-notifications.ts
+index b3982c502..3481b401a 100644
+--- a/src/main/push-notifications.ts
++++ b/src/main/push-notifications.ts
+@@ -13,7 +13,7 @@ import {
+   type NotificationRelayPush,
+   type NotificationSound,
+ } from "@openbot/contracts/notification-relay";
+-import { TEAM_CHANNEL_ATTENTION_CAPABILITY } from "@openbot/contracts/team-protocol/current";
++import { TEAM_CHANNEL_ATTENTION_CAPABILITY, USER_MENTIONS_CAPABILITY } from "@openbot/contracts/team-protocol/current";
+ import { PUSH_NOTIFICATION_THREADS_CAPABILITY } from "@openbot/contracts/team-protocol/push-notification-threads-v1";
+ import { resolveLocale, translateFor } from "@openbot/i18n";
+ import { redactText, toLogValue } from "@openbot/logging";
+@@ -24,6 +24,7 @@ import {
+   agentNotificationLevel,
+   notificationForAgentEvent,
+ } from "@openbot/team-client/agent-notifications";
++import type { ChannelMentionNotificationContent } from "@openbot/team-client/channel-notifications";
+ import {
+   decodeLiveActivityBytes,
+   LIVE_ACTIVITY_NONCE_BYTES,
+@@ -39,6 +40,7 @@ import {
+ import { Effect, Exit, Fiber, Result, Schema, Scope } from "effect";
+ import { isNoUpdateAnswer } from "../backend/agent/routine-quiet-runs";
+ import type { AgentService } from "../backend/agent-service";
++import { type ChannelPushHistory, ChannelPushReader } from "./channel-push-notifications";
+ import type { PushNotificationStore, PushTarget, StoredPushRegistration } from "./push-notification-store";
+ import type { TeamApiAgents } from "./team-api/dependencies";
+ import { markerExclusionsForCapabilities } from "./team-api/request-helpers";
+@@ -121,6 +123,7 @@ interface PushNotificationOptions {
+   ): boolean;
+   /** The channel whose execution thread `threadId` is, or `null` for an agent's own thread. */
+   channelForThread?(threadId: string): AgentNotificationChannel | null;
++  channelHistory?: ChannelPushHistory;
+   randomBytes(size: number): Uint8Array;
+   now?: () => number;
+   logger?: { warn(message: string, ...values: unknown[]): void };
+@@ -149,6 +152,12 @@ interface HeldEvent {
+   at: number;
+ }
+ 
++interface HeldMention {
++  mention: ChannelMentionNotificationContent;
++  event: Extract<AgentEvent, { type: "channels-changed" }>;
++  at: number;
++}
++
+ interface Registration {
+   stored: StoredPushRegistration;
+   capabilities: ReadonlySet<string>;
+@@ -157,6 +166,8 @@ interface Registration {
+   connected: boolean;
+   /** Events that came while the phone looked on screen, oldest first. */
+   held: HeldEvent[];
++  heldMentions: HeldMention[];
++  mentions: ChannelPushReader | null;
+   flushTimer: ReturnType<typeof setTimeout> | null;
+ }
+ 
+@@ -317,12 +328,28 @@ export class PushNotificationService {
+     const secret = decodeLiveActivityBytes(stored.value.secret);
+     if (secret?.length !== LIVE_ACTIVITY_SECRET_BYTES) return false;
+     if (previous) this.#clearFlush(previous);
++    const sameViewer =
++      previous?.stored.memberId === stored.memberId &&
++      previous.stored.protocol === stored.protocol &&
++      [...previous.capabilities].sort().join("\n") === [...stored.capabilities].sort().join("\n");
++    const capabilities = new Set(stored.capabilities);
++    const mentions = sameViewer
++      ? previous.mentions
++      : this.#options.channelHistory && capabilities.has(USER_MENTIONS_CAPABILITY)
++        ? new ChannelPushReader(
++            this.#options.channelHistory,
++            { memberId: stored.memberId, protocol: stored.protocol, capabilities },
++            translateFor(resolveLocale("system", stored.value.locale)),
++          )
++        : null;
+     this.#registrations.set(stored.sessionId, {
+       stored,
+       capabilities: new Set(stored.capabilities),
+       keys: pushNotificationKeys(secret),
+       connected,
+-      held: previous?.held ?? [],
++      held: sameViewer ? previous.held : [],
++      heldMentions: sameViewer ? previous.heldMentions : [],
++      mentions,
+       flushTimer: null,
+     });
+     return true;
+@@ -337,6 +364,10 @@ export class PushNotificationService {
+     received: AgentEvent,
+     only?: Registration,
+   ) {
++    if (received.type === "channels-changed") {
++      yield* this.#channelMentions(received, only);
++      return;
++    }
+     // A side thread's turn notifies as a turn of the chat does. Its answer is in that thread.
+     const thread = received.type === "thread-turn-completed" ? received : null;
+     const event = thread ? thread.turn : received;
+@@ -444,6 +475,92 @@ export class PushNotificationService {
+     }
+   });
+ 
++  /** Channel changes carry no text; read each phone's permitted history and seal only its mentions. */
++  #channelMentions = Effect.fn("PushNotifications.channelMentions")(function* (
++    this: PushNotificationService,
++    event: Extract<AgentEvent, { type: "channels-changed" }>,
++    only?: Registration,
++  ) {
++    for (const registration of only ? [only] : [...this.#registrations.values()]) {
++      if (!registration.mentions) continue;
++      if (!this.#options.memberActive(registration.stored.memberId)) {
++        this.remove(registration.stored.sessionId);
++        continue;
++      }
++      const translate = translateFor(resolveLocale("system", registration.stored.value.locale));
++      const mentions = yield* Effect.tryPromise(
++        () =>
++          registration.mentions?.refresh(translate, registration.stored.value.preview ? redactText : null) ??
++          Promise.resolve([]),
++      ).pipe(
++        Effect.catch((error) => {
++          this.#options.logger?.warn("Channel mentions could not be read:", toLogValue(error.cause));
++          return Effect.succeed([]);
++        }),
++      );
++      const current = this.#registrations.get(registration.stored.sessionId);
++      if (!current || current.mentions !== registration.mentions) continue;
++      for (const mention of mentions) yield* this.#deliverMention(current, mention, event, !only);
++    }
++  });
++
++  #deliverMention = Effect.fn("PushNotifications.deliverMention")(function* (
++    this: PushNotificationService,
++    registration: Registration,
++    mention: ChannelMentionNotificationContent,
++    event: Extract<AgentEvent, { type: "channels-changed" }>,
++    hold: boolean,
++  ) {
++    const { stored } = registration;
++    const { memberId, sessionId, value } = stored;
++    if (!this.#running || this.#registrations.get(sessionId) !== registration || !registration.mentions) return;
++    if (!this.#options.memberActive(memberId)) {
++      this.remove(sessionId);
++      return;
++    }
++    const now = this.#now();
++    if (value.mutedUntil !== null && value.mutedUntil * 1_000 > now) return;
++    if ((this.#options.memberLevels?.(memberId).server ?? value.level) === "nothing") return;
++    if (!registration.mentions.unseen(mention)) return;
++    if (!value.away && registration.connected) {
++      if (hold)
++        registration.heldMentions = [
++          ...registration.heldMentions.filter((item) => now - item.at < HELD_EVENT_MS),
++          { mention, event, at: now },
++        ].slice(-HELD_EVENT_LIMIT);
++      return;
++    }
++    const used = this.#lastUseElsewhere(memberId, sessionId);
++    if ((used !== null && now - used < this.#awayAfterMs) || this.#options.atHostComputer(memberId, event)) return;
++    if (value.token === null) return;
++    const translate = translateFor(resolveLocale("system", value.locale));
++    const fixed = translate("notification.userMention");
++    const content: PushNotificationContent = {
++      serverId: value.serverId,
++      agentId: mention.agentId,
++      threadId: null,
++      channelId: mention.channelId,
++      kind: "mention",
++      title: mention.title,
++      body: value.preview ? mention.body : fixed,
++    };
++    yield* this.#send(registration, content, fixed, () => {
++      const current = this.#now();
++      const used = this.#lastUseElsewhere(memberId, sessionId);
++      return (
++        this.#running &&
++        this.#registrations.get(sessionId) === registration &&
++        (value.away || !registration.connected) &&
++        this.#options.memberActive(memberId) &&
++        (value.mutedUntil === null || value.mutedUntil * 1_000 <= current) &&
++        (this.#options.memberLevels?.(memberId).server ?? value.level) !== "nothing" &&
++        !(used !== null && current - used < this.#awayAfterMs) &&
++        !this.#options.atHostComputer(memberId, event) &&
++        (registration.mentions?.unseen(mention) ?? false)
++      );
++    }).pipe(Effect.forkIn(this.#scope, { startImmediately: true }));
++  });
++
+   /** The answer of a turn in the agent's own chat or in a side thread, or `null` when it has none. */
+   #answer = Effect.fn("PushNotifications.answer")(function* (
+     this: PushNotificationService,
+@@ -474,6 +591,7 @@ export class PushNotificationService {
+     registration: Registration,
+     content: PushNotificationContent,
+     shortBody: string,
++    stillValid?: () => boolean,
+   ) {
+     const { stored, keys } = registration;
+     let sealed = sealPushNotification(content, keys, this.#options.randomBytes(LIVE_ACTIVITY_NONCE_BYTES));
+@@ -486,6 +604,7 @@ export class PushNotificationService {
+     if (!request) return;
+     // A Mac that wakes before its network, or a short fault at Apple or Google, refuses one send.
+     for (let attempt = 0; ; attempt += 1) {
++      if (stillValid && !stillValid()) return;
+       const result = yield* Effect.result(this.#options.send(request));
+       if (Result.isSuccess(result)) {
+         // The session ended, the app was removed, or Apple or Google refused the token.
+@@ -515,6 +634,7 @@ export class PushNotificationService {
+   #dropHeld(registration: Registration): void {
+     this.#clearFlush(registration);
+     registration.held = [];
++    registration.heldMentions = [];
+   }
+ 
+   #clearFlush(registration: Registration): void {
+@@ -539,7 +659,7 @@ export class PushNotificationService {
+ 
+   /** Sends the kept events of a phone that is away, after a short wait for the phone to say that it is back. */
+   #scheduleFlush(registration: Registration): void {
+-    if (!registration.held.length || registration.flushTimer) return;
++    if ((!registration.held.length && !registration.heldMentions.length) || registration.flushTimer) return;
+     registration.flushTimer = setTimeout(() => {
+       registration.flushTimer = null;
+       if (this.#registrations.get(registration.stored.sessionId) !== registration) return;
+@@ -552,7 +672,10 @@ export class PushNotificationService {
+     if (!value.away && registration.connected) return;
+     const now = this.#now();
+     const held = registration.held.filter((item) => now - item.at < HELD_EVENT_MS);
++    const heldMentions = registration.heldMentions.filter((item) => now - item.at < HELD_EVENT_MS);
+     registration.held = [];
++    registration.heldMentions = [];
++    for (const item of heldMentions) yield* this.#deliverMention(registration, item.mention, item.event, false);
+     if (!held.length) return;
+     const snapshot = this.#options.agents.getRuntimeSnapshot();
+     const reads = this.#options.agents.listConversationReads(
+diff --git a/src/main/remote-server-manager.ts b/src/main/remote-server-manager.ts
+index ef09ae887..a309b3b4c 100644
+--- a/src/main/remote-server-manager.ts
++++ b/src/main/remote-server-manager.ts
+@@ -1901,6 +1901,22 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
+     });
+   }
+ 
++  /** The authenticated member of this joined server, resolved from its saved login. */
++  notificationMemberId(serverId: string): string | null {
++    const username = this.#store.servers
++      .find((server) => server.id === serverId)
++      ?.username.trim()
++      .toLowerCase();
++    if (!username) return null;
++    return (
++      this.getPresence(serverId).members.find(
++        (member) =>
++          !member.disabled &&
++          (member.username.trim().toLowerCase() === username || member.email?.trim().toLowerCase() === username),
++      )?.id ?? null
++    );
++  }
++
+   getPresence(serverId = this.#store.activeServerId): TeamPresenceSnapshot {
+     return this.#withMemberChatColors(serverId, this.#presence.get(serverId));
+   }
+diff --git a/src/main/renderer-forwarders.ts b/src/main/renderer-forwarders.ts
+index 955a97979..dac03f404 100644
+--- a/src/main/renderer-forwarders.ts
++++ b/src/main/renderer-forwarders.ts
+@@ -21,6 +21,7 @@ import {
+   type BrowserDisplayState,
+   type ChannelSummary,
+   type ClientAgentSummary,
++  decodeChannelPage,
+   decodeChannelSummaries,
+   IPC_ENDPOINTS,
+   LOCAL_SERVER_ID,
+@@ -48,6 +49,7 @@ import {
+   notificationRequestKey,
+ } from "@openbot/team-client/agent-notifications";
+ import {
++  ChannelMentionNotifications,
+   channelForThread,
+   channelReplyNotifications,
+   newChannelReplies,
+@@ -79,6 +81,7 @@ export interface RendererForwarderDependencies {
+   getHostAnalytics: () => HostAnalytics | null;
+   getRemoteServerManager: () => Pick<
+     RemoteServerManager,
++    | "notificationMemberId"
+     | "activeServerId"
+     | "list"
+     | "request"
+@@ -158,6 +161,7 @@ export function createRendererForwarders({
+    * change sets the baseline and its completion notifies.
+    */
+   const channelLists = new Map<string, ChannelSummary[]>();
++  const channelMentions = new Map<string, { readerId: string; tracker: ChannelMentionNotifications }>();
+   /** The servers whose channel list is being read. True when a change came in during the read. */
+   const channelReads = new Map<string, boolean>();
+   /** The shown reply notification of each channel. A newer reply replaces it. */
+@@ -179,7 +183,8 @@ export function createRendererForwarders({
+    * on its own when the list has none.
+    */
+   function refreshChannels(serverId: string): void {
+-    if (replyLevel(serverId) !== "all") {
++    if (!replyLevel(serverId) || replyLevel(serverId) === "nothing") {
++      channelMentions.delete(serverId);
+       channelLists.delete(serverId);
+       return;
+     }
+@@ -214,26 +219,52 @@ export function createRendererForwarders({
+   async function notifyChannelReplies(serverId: string, next: ChannelSummary[]): Promise<void> {
+     const previous = channelLists.get(serverId) ?? null;
+     channelLists.set(serverId, next);
++    const host = getHostService();
++    const manager = getRemoteServerManager();
++    const readerId = serverId === LOCAL_SERVER_ID ? host?.channelActor().id : manager?.notificationMemberId(serverId);
++    let mentions: import("@openbot/team-client/channel-notifications").ChannelNotificationContent[] = [];
++    if (readerId) {
++      let tracking = channelMentions.get(serverId);
++      if (!tracking || tracking.readerId !== readerId) {
++        tracking = { readerId, tracker: new ChannelMentionNotifications() };
++        channelMentions.set(serverId, tracking);
++      }
++      mentions = await tracking.tracker.read(next, {
++        readerId,
++        readPage: async (input) => {
++          if (serverId === LOCAL_SERVER_ID && host) return host.readChannelNotificationPage(input);
++          if (!manager) throw new Error("Remote server is unavailable.");
++          return runCauseEffect(
++            manager.request(serverId, CHANNEL_ROUTES.read, decodeChannelPage, { method: "POST", body: input }),
++          );
++        },
++        translate: getTranslate(),
++        redact: notificationPreviewEnabled() ? redactText : null,
++      });
++    }
+     if (!previous || !Notification.isSupported()) return;
+     const level = () => {
+       const window = getMainWindow();
+       if (!window || window.isDestroyed() || appFocused(window)) return null;
+       return replyLevel(serverId);
+     };
+-    // Only "all" notifies a reply. The agent lookup is skipped at the other levels, and while a
+-    // reply streams, when no reply is new.
+-    if (level() !== "all" || newChannelReplies(previous, next).length === 0) return;
+-    const agentLookup = notificationAgents(serverId);
+-    const agents = agentLookup instanceof Promise ? await agentLookup : agentLookup;
+-    // The settings are read again: the user can change them while the lookup runs.
+     const current = level();
+-    if (!current) return;
+-    const replies = channelReplyNotifications(previous, next, {
+-      agents,
+-      translate: getTranslate(),
+-      level: current,
+-      redact: notificationPreviewEnabled() ? redactText : null,
+-    });
++    if (!current || current === "nothing") return;
++    const replies = [...mentions];
++    if (current === "all" && newChannelReplies(previous, next).length > 0) {
++      const agentLookup = notificationAgents(serverId);
++      const agents = agentLookup instanceof Promise ? await agentLookup : agentLookup;
++      if (!level() || level() === "nothing") return;
++      const mentionedChannels = new Set(mentions.map((mention) => mention.channelId));
++      replies.push(
++        ...channelReplyNotifications(previous, next, {
++          agents,
++          translate: getTranslate(),
++          level: level() ?? "nothing",
++          redact: notificationPreviewEnabled() ? redactText : null,
++        }).filter((reply) => !mentionedChannels.has(reply.channelId)),
++      );
++    }
+     for (const reply of replies) {
+       const key = `${serverId}\n${reply.channelId}`;
+       const notification = new Notification({ title: reply.title, body: reply.body });
+diff --git a/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx b/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
+index 99ffdbe1c..89df6b44e 100644
+--- a/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
++++ b/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
+@@ -1,4 +1,5 @@
+ import type { AgentStatus, BrowserTakeoverRequest, CentralAuthUser } from "@openbot/contracts/ipc";
++import { USER_MENTIONS_CAPABILITY } from "@openbot/contracts/team-protocol/current";
+ import { hasVisibleToasts } from "@openbot/ui";
+ import { createMemo, Show } from "solid-js";
+ import { useNavigation } from "../../navigation";
+@@ -134,6 +135,9 @@ function DesktopChannelConversation(props: { channelId: string; account: () => C
+       agent={undefined}
+       agents={agentList()}
+       mentionAgents={view.mentionAgents()}
++      mentionUsers={teamPresence()
++        .members.filter((member) => !member.disabled && activeServerSupportsCapability(USER_MENTIONS_CAPABILITY))
++        .map((member) => ({ id: member.id, name: member.name ?? member.username, username: member.username }))}
+       modelOptions={[]}
+       messages={view.messages()}
+       unreadCount={view.unreadCount()}
+diff --git a/src/renderer/src/features/conversation/ConversationComposer.tsx b/src/renderer/src/features/conversation/ConversationComposer.tsx
+index a97b0024e..c4eeaeba8 100644
+--- a/src/renderer/src/features/conversation/ConversationComposer.tsx
++++ b/src/renderer/src/features/conversation/ConversationComposer.tsx
+@@ -702,6 +702,7 @@ export function ConversationComposer() {
+             <ComposerEditor
+               agentId={props.agent?.id}
+               agents={props.mentionAgents ?? props.agents}
++              users={props.mentionUsers}
+               everyoneMention={Boolean(channel) && (props.mentionAgents ?? props.agents).length > 1}
+               skills={installedSkills()}
+               skillsLoadFailed={installedSkillsLoadFailed()}
+diff --git a/src/renderer/src/features/conversation/conversation-types.ts b/src/renderer/src/features/conversation/conversation-types.ts
+index c30da901c..b07516ea1 100644
+--- a/src/renderer/src/features/conversation/conversation-types.ts
++++ b/src/renderer/src/features/conversation/conversation-types.ts
+@@ -210,6 +210,7 @@ export interface ConversationProps {
+    * messages, so the desktop leaves it out; the timeline still names it from `agents`.
+    */
+   mentionAgents?: AgentProfile[] | undefined;
++  mentionUsers?: import("@openbot/ui/data").ComposerUser[] | undefined;
+   availableRoutineIds?: readonly string[] | undefined;
+   /** The agent's routines, for the chat card of a routine the agent created or changed. */
+   routines?: readonly RoutineFields[] | undefined;
+diff --git a/src/renderer/src/features/web-client/WebWorkspace.tsx b/src/renderer/src/features/web-client/WebWorkspace.tsx
+index 5047cfdf3..bcdad28f4 100644
+--- a/src/renderer/src/features/web-client/WebWorkspace.tsx
++++ b/src/renderer/src/features/web-client/WebWorkspace.tsx
+@@ -59,6 +59,7 @@ import {
+   AGENT_HIDDEN_CAPABILITY,
+   AGENT_WELCOME_CAPABILITY,
+   TEAM_AGENT_CREATE_MODEL_CAPABILITY,
++  USER_MENTIONS_CAPABILITY,
+ } from "@openbot/contracts/team-protocol/current";
+ import { DISCORD_ACCESS_CAPABILITY } from "@openbot/contracts/team-protocol/discord-access-v1";
+ import { EVENTS_CAPABILITY } from "@openbot/contracts/team-protocol/events-v1";
+@@ -763,6 +764,13 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+             threadId,
+           )
+         : null,
++    memberId: () => workspace.state.memberId,
++    readChannel: (hostId, input) => {
++      if (workspace.state.host?.hostId !== hostId) return Promise.reject(new Error("The active server changed."));
++      const api = workspace.runtime.channels;
++      if (!api) return Promise.reject(new Error("Channels are unavailable."));
++      return api.readChannel(input);
++    },
+     readAgentLevels: workspace.runtime.listAgentNotificationLevels,
+   });
+   // A host keeps the level of the user for all devices, so the rail reads it when the host comes online.
+@@ -1763,7 +1771,7 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+       const previous = channelBaseline?.scope === scope ? channelBaseline.channels : null;
+       channelBaseline = { scope, channels: list };
+       if (hostId) {
+-        notifyChannelReplies(hostId, previous, list);
++        void notifyChannelReplies(hostId, previous, list);
+         saveRemoteFrameChannels(props.accountId, hostId, list);
+       }
+     },
+@@ -3414,6 +3422,16 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+                         agent={undefined}
+                         agents={workspace.profiles()}
+                         mentionAgents={channelView.mentionAgents()}
++                        mentionUsers={(workspace.state.presence?.members ?? [])
++                          .filter(
++                            (member) =>
++                              !member.disabled && workspace.state.capabilities.includes(USER_MENTIONS_CAPABILITY),
++                          )
++                          .map((member) => ({
++                            id: member.id,
++                            name: member.name ?? member.username,
++                            username: member.username,
++                          }))}
+                         modelOptions={[]}
+                         messages={channelView.messages()}
+                         unreadCount={channelView.unreadCount()}
+diff --git a/src/renderer/src/features/web-client/web-notification-routing.ts b/src/renderer/src/features/web-client/web-notification-routing.ts
+index b412941b4..e134b2f53 100644
+--- a/src/renderer/src/features/web-client/web-notification-routing.ts
++++ b/src/renderer/src/features/web-client/web-notification-routing.ts
+@@ -13,7 +13,7 @@ import {
+   agentNotificationLevel,
+   notificationRequestKey,
+ } from "@openbot/team-client/agent-notifications";
+-import { channelReplyNotifications } from "@openbot/team-client/channel-notifications";
++import { ChannelMentionNotifications, channelReplyNotifications } from "@openbot/team-client/channel-notifications";
+ import type { TextValue } from "@openbot/ui/text";
+ import { onCleanup, untrack } from "solid-js";
+ import { startActionSounds } from "../../action-sounds";
+@@ -47,6 +47,11 @@ export function createWebNotificationRouting(options: {
+   /** The channel of a thread on the open host, from its channel list, or null. */
+   channelForThread: (hostId: string, threadId: string) => AgentNotificationChannel | null;
+   /** The user's own level for each agent of a host. Absent, the server level applies to each agent. */
++  memberId: () => string | null;
++  readChannel: (
++    hostId: string,
++    input: import("@openbot/contracts/ipc").ChannelReadInput,
++  ) => Promise<import("@openbot/contracts/ipc").ChannelPage>;
+   readAgentLevels?: ((hostId: string) => Promise<AgentNotificationLevelsSnapshot>) | undefined;
+ }) {
+   const { workspace, notifications } = options;
+@@ -54,6 +59,7 @@ export function createWebNotificationRouting(options: {
+   const agentLevels = new Map<string, ReadonlyMap<string, ServerNotificationLevel>>();
+   /** The requests whose notification waits for the levels. An answer on any device removes its key. */
+   const waitingRequests = new Set<string>();
++  const mentionTrackers = new Map<string, { readerId: string; tracker: ChannelMentionNotifications }>();
+ 
+   async function levelsOf(hostId: string): Promise<ReadonlyMap<string, ServerNotificationLevel> | null> {
+     const read = options.readAgentLevels;
+@@ -112,17 +118,43 @@ export function createWebNotificationRouting(options: {
+     });
+   }
+   /** The replies that a new channel list of the open host shows. The first list is the baseline. */
+-  function notifyChannelReplies(hostId: string, previous: ChannelSummary[] | null, next: ChannelSummary[]): void {
+-    const { muted, level } = untrack(() => notifications.state(hostId));
+-    if (muted) return;
+-    const replies = channelReplyNotifications(previous, next, {
+-      agents: untrack(() => workspace.state.agents),
+-      translate: options.t,
+-      level,
+-      // As for an agent reply, the web client shows no preview.
+-      redact: null,
+-    });
+-    showWebChannelNotifications({ hostId, replies, onOpen: (channelId) => options.onOpenChannel(hostId, channelId) });
++  async function notifyChannelReplies(
++    hostId: string,
++    previous: ChannelSummary[] | null,
++    next: ChannelSummary[],
++  ): Promise<void> {
++    const readerId = options.memberId();
++    if (!readerId) return;
++    let tracking = mentionTrackers.get(hostId);
++    if (!tracking || tracking.readerId !== readerId) {
++      tracking = { readerId, tracker: new ChannelMentionNotifications() };
++      mentionTrackers.set(hostId, tracking);
++    }
++    try {
++      const mentions = await tracking.tracker.read(next, {
++        readerId,
++        readPage: (input) => options.readChannel(hostId, input),
++        translate: options.t,
++        redact: null,
++      });
++      const { muted, level } = untrack(() => notifications.state(hostId));
++      if (muted || level === "nothing" || options.memberId() !== readerId || workspace.state.host?.hostId !== hostId)
++        return;
++      const mentionedChannels = new Set(mentions.map((mention) => mention.channelId));
++      const replies = channelReplyNotifications(previous, next, {
++        agents: untrack(() => workspace.state.agents),
++        translate: options.t,
++        level,
++        redact: null,
++      }).filter((reply) => !mentionedChannels.has(reply.channelId));
++      showWebChannelNotifications({
++        hostId,
++        replies: [...mentions, ...replies],
++        onOpen: (channelId) => options.onOpenChannel(hostId, channelId),
++      });
++    } catch {
++      // A disconnected host is retried on its next channel list. No message is marked read.
++    }
+   }
+   function setMuted(hostId: string, muted: boolean, durationMs?: number) {
+     if (!muted) requestWebNotificationPermission(true);
+diff --git a/src/renderer/stories/ComposerEditor.stories.tsx b/src/renderer/stories/ComposerEditor.stories.tsx
+index aa97bb0d2..5eab0dc7d 100644
+--- a/src/renderer/stories/ComposerEditor.stories.tsx
++++ b/src/renderer/stories/ComposerEditor.stories.tsx
+@@ -332,3 +332,16 @@ export const WithTabAndThreadTags: Story = {
+   },
+   render: (storyArgs) => composerFrame(storyArgs, { width: "480px", compact: true }),
+ };
++
++/** People stay distinct by username, including two members with the same display name. */
++export const UserMentions: Story = {
++  args: {
++    agentId: undefined,
++    users: [
++      { id: "member-alex-design", name: "Alex", username: "alex.design@example.invalid" },
++      { id: "member-alex-dev", name: "Alex", username: "alex.dev@example.invalid" },
++    ],
++    value: `${serializeChatTagReference("user", "Alex", "member-alex-design")} please review this.`,
++  },
++  render: (storyArgs) => composerFrame(storyArgs, { width: "480px" }),
++};
