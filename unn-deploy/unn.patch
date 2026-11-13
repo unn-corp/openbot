@@ -50,7 +50,7 @@ index 000000000..244b4ceca
 +- Mention a server member from the channel composer's `@` list. Mentions name people by ID and notify the named member on desktop, in the browser, and through encrypted iOS and Android push. A click or tap opens the channel. Server mute, notification levels, and read state apply. Self-mentions and repeated updates stay quiet.
 +- Send a channel post addressed only to people without starting an agent task. Hosts without user mention support keep the agent picker.
 diff --git a/docs/architecture/channels-and-messaging.md b/docs/architecture/channels-and-messaging.md
-index e4c648d67..798c294cf 100644
+index f8b736076..b51465687 100644
 --- a/docs/architecture/channels-and-messaging.md
 +++ b/docs/architecture/channels-and-messaging.md
 @@ -67,7 +67,7 @@ parts to other agents thus notifies once, at its end. The desktop reads the agen
@@ -73,7 +73,7 @@ index e4c648d67..798c294cf 100644
  
  An agent can also give work to a channel from another conversation, such as its direct chat with
  the user. `list_channels` lists the open channels with their lead and members.
-@@ -854,3 +854,31 @@ image shows its own thumbnail, every other file shows the file icon, and the mes
+@@ -886,3 +886,31 @@ image shows its own thumbnail, every other file shows the file icon, and the mes
  a file in the share sheet. The thumbnail reads the attachment through the query key the chat uses,
  so a file already read in a message is not fetched again. The editor changes the text, removes the
  files the message already has, and adds new ones.
@@ -177,7 +177,7 @@ index a19965854..e53f11bf8 100644
  }
  
 diff --git a/packages/contracts/src/ipc-chat-channels.ts b/packages/contracts/src/ipc-chat-channels.ts
-index ca26cb266..3272a7257 100644
+index d37938176..b189f00c4 100644
 --- a/packages/contracts/src/ipc-chat-channels.ts
 +++ b/packages/contracts/src/ipc-chat-channels.ts
 @@ -19,7 +19,11 @@ export const CHANNEL_TASK_CANCEL_CAPABILITY = "channel-task-cancel-v1";
@@ -194,10 +194,10 @@ index ca26cb266..3272a7257 100644
   * The reason a run stops at `CHANNEL_ASSIGNMENT_LIMIT`. Saved tasks and every host version carry this
   * exact English, so a screen compares it to show its own text. Do not change it.
 diff --git a/packages/contracts/src/team-protocol/current.ts b/packages/contracts/src/team-protocol/current.ts
-index 7a25b8b4a..34371674a 100644
+index b78ec0c5e..8d113b8b3 100644
 --- a/packages/contracts/src/team-protocol/current.ts
 +++ b/packages/contracts/src/team-protocol/current.ts
-@@ -148,6 +148,7 @@ import { THREAD_MESSAGE_SEARCH_CAPABILITY } from "./thread-message-search-v1";
+@@ -159,6 +159,7 @@ import { THREAD_MESSAGE_SEARCH_CAPABILITY } from "./thread-message-search-v1";
  import { TEAM_UI_BLOCK_AUTO_ANSWER_CAPABILITY } from "./ui-block-auto-answer-v1";
  import { TEAM_UI_BLOCK_VAULT_CAPABILITY } from "./ui-block-vault-v1";
  import { TEAM_UI_BLOCKS_CAPABILITY } from "./ui-blocks-v1";
@@ -205,15 +205,15 @@ index 7a25b8b4a..34371674a 100644
  import { TEAM_OPEN_PROVIDERS_CAPABILITY } from "./v8";
  import { TEAM_LONG_CAPABILITY_LISTS_CAPABILITY, TEAM_PROTOCOL_V9_CAPABILITIES } from "./v9";
  import { VAULT_IMPORT_CAPABILITY } from "./vault-import-v1";
-@@ -354,6 +355,7 @@ export {
-   TEAM_UI_BLOCK_VAULT_CAPABILITY,
+@@ -382,6 +383,7 @@ export {
    TEAM_UI_BLOCKS_CAPABILITY,
+   TEAM_VIDEO_GENERATION_CAPABILITY,
    THREAD_MESSAGE_SEARCH_CAPABILITY,
 +  USER_MENTIONS_CAPABILITY,
    VAULT_CAPABILITY,
    VAULT_IMPORT_CAPABILITY,
    VAULT_V2_CAPABILITY,
-@@ -520,6 +522,7 @@ export const TEAM_CURRENT_CAPABILITIES = [
+@@ -550,6 +552,7 @@ export const TEAM_CURRENT_CAPABILITIES = [
    BROWSER_EGRESS_CAPABILITY,
    CODEX_API_KEY_CAPABILITY,
    CHANNEL_ISOLATION_CAPABILITY,
@@ -221,7 +221,7 @@ index 7a25b8b4a..34371674a 100644
    AGENT_THREAD_PAGES_CAPABILITY,
    TEAM_ANY_FILE_ATTACHMENTS_CAPABILITY,
    ROUTINE_RUN_PLACE_CAPABILITY,
-@@ -797,6 +800,7 @@ export const TEAM_PROTOCOL_V9_ONLY_CAPABILITIES: ReadonlySet<string> = new Set<T
+@@ -855,6 +858,7 @@ export const TEAM_PROTOCOL_V9_ONLY_CAPABILITIES: ReadonlySet<string> = new Set<T
    BROWSER_EGRESS_CAPABILITY,
    CODEX_API_KEY_CAPABILITY,
    CHANNEL_ISOLATION_CAPABILITY,
@@ -246,7 +246,7 @@ index 000000000..f3177ca32
 + */
 +export const USER_MENTIONS_CAPABILITY = "user-mentions-v1";
 diff --git a/packages/i18n/src/messages/en/composer.ts b/packages/i18n/src/messages/en/composer.ts
-index 8905d2c45..700982d13 100644
+index 7c2f81224..9fd19e1e0 100644
 --- a/packages/i18n/src/messages/en/composer.ts
 +++ b/packages/i18n/src/messages/en/composer.ts
 @@ -1,6 +1,8 @@
@@ -271,7 +271,7 @@ index e7df7635f..5e47644bf 100644
    // notifications, raised by the web client while its tab is open.
    "notification.needsInput": "Needs your input.",
 diff --git a/packages/i18n/untranslated.json b/packages/i18n/untranslated.json
-index d935e3534..82769dda3 100644
+index 07b9cc603..951b3f61e 100644
 --- a/packages/i18n/untranslated.json
 +++ b/packages/i18n/untranslated.json
 @@ -1,4 +1,7 @@
@@ -432,10 +432,10 @@ index ef302a04d..a26660d82 100644
    body: string;
  }
 diff --git a/packages/ui/src/data.ts b/packages/ui/src/data.ts
-index d1b04c719..643c15575 100644
+index 9c73122b7..24bfd0205 100644
 --- a/packages/ui/src/data.ts
 +++ b/packages/ui/src/data.ts
-@@ -329,6 +329,13 @@ export interface AgentProfile {
+@@ -340,6 +340,13 @@ export interface AgentProfile {
  }
  
  /** The agent fields that the composer, the queue, rich text and the browser dock read. */
@@ -450,7 +450,7 @@ index d1b04c719..643c15575 100644
    AgentProfile,
    "id" | "name" | "title" | "description" | "avatarSeed" | "avatarHue" | "avatarColor" | "avatarUrl"
 diff --git a/packages/ui/src/features/conversation/ComposerEditor.tsx b/packages/ui/src/features/conversation/ComposerEditor.tsx
-index 7bd514f69..443abef4f 100644
+index e742a0054..b8bdbdd56 100644
 --- a/packages/ui/src/features/conversation/ComposerEditor.tsx
 +++ b/packages/ui/src/features/conversation/ComposerEditor.tsx
 @@ -17,7 +17,14 @@ import {
@@ -485,7 +485,7 @@ index 7bd514f69..443abef4f 100644
    skills?: ComposerSkill[] | undefined;
    /** The host's MCP servers, offered by the same `$` the skills answer. */
    mcpServers?: ComposerMcpServer[] | undefined;
-@@ -204,6 +213,10 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -244,6 +253,10 @@ export function ComposerEditor(props: ComposerEditorProps) {
      { mount: undefined, bottom: 0 },
      { equals: (previous, next) => previous.mount === next.mount && previous.bottom === next.bottom },
    );
@@ -496,7 +496,7 @@ index 7bd514f69..443abef4f 100644
    const matchingAgents = createMemo(() => {
      const others = props.agents.filter((agent) => agent.id !== props.agentId);
      return rankAgentMentions(others, mention()?.query ?? "");
-@@ -280,6 +293,11 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -320,6 +333,11 @@ export function ComposerEditor(props: ComposerEditorProps) {
        ].filter((section) => section.options.length > 0);
      if (trigger !== "@") return [];
      const sections: PickerSection[] = [
@@ -508,7 +508,7 @@ index 7bd514f69..443abef4f 100644
        {
          id: "agents",
          title: "composer.picker.section.agents",
-@@ -393,6 +411,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -437,6 +455,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
        agentId: props.agentId,
        value: props.value,
        agents: props.agents,
@@ -516,7 +516,7 @@ index 7bd514f69..443abef4f 100644
        skills: props.skills ?? [],
        mcpServers: props.mcpServers ?? [],
        attachments: props.attachments ?? [],
-@@ -521,6 +540,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -565,6 +584,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
        shown: dictating(),
        value: props.value,
        agents: props.agents,
@@ -524,7 +524,7 @@ index 7bd514f69..443abef4f 100644
        skills: props.skills ?? [],
        mcpServers: props.mcpServers ?? [],
        attachments: props.attachments ?? [],
-@@ -610,6 +630,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -654,6 +674,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
    function tagSources(): EditorTagSources {
      return {
        agents: props.agents,
@@ -532,7 +532,7 @@ index 7bd514f69..443abef4f 100644
        skills: props.skills ?? [],
        mcpServers: props.mcpServers ?? [],
        attachments: props.attachments ?? [],
-@@ -705,19 +726,21 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -749,19 +770,21 @@ export function ComposerEditor(props: ComposerEditorProps) {
      if (!range) return;
      range.deleteContents();
      const token =
@@ -567,7 +567,7 @@ index 7bd514f69..443abef4f 100644
      const trailingSpace = document.createTextNode(" ");
      range.insertNode(trailingSpace);
      range.insertNode(token);
-@@ -1195,7 +1218,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
+@@ -1243,7 +1266,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
                      >
                        {option.type === "agent" ? (
                          <AgentAvatar agent={option.agent} />
@@ -745,10 +745,10 @@ index 8f619d6c0..a7c65b696 100644
        const id = target.slice("attachment:".length);
        const attachment = attachments.find((candidate) => candidate.id === id);
 diff --git a/src/backend/agent-service.ts b/src/backend/agent-service.ts
-index 86e62d3eb..c0bd5aa51 100644
+index 62402ec41..67ead8bc5 100644
 --- a/src/backend/agent-service.ts
 +++ b/src/backend/agent-service.ts
-@@ -447,6 +447,7 @@ export interface AgentServiceOptions {
+@@ -464,6 +464,7 @@ export interface AgentServiceOptions {
    channelPersonAgentLevel?: (personId: string, agentId: string) => AgentAccessLevel;
    /** Whether that person uses a remote client, which has only the released routine schedules. Omitted, no. */
    channelRemotePerson?: (personId: string) => boolean;
@@ -756,7 +756,7 @@ index 86e62d3eb..c0bd5aa51 100644
    deleteWithRevokedApproval?: (
      agentId: string,
      remove: () => Effect.Effect<void, AgentRemovalFailed>,
-@@ -1442,6 +1443,7 @@ export class AgentService extends EventEmitter<AgentServiceEvents> {
+@@ -1479,6 +1480,7 @@ export class AgentService extends EventEmitter<AgentServiceEvents> {
        memoriesChanged: (channelId) => this.#emit({ type: "channel-memories-changed", channelId }),
        ...(options.channelPersonAgentLevel ? { personAgentLevel: options.channelPersonAgentLevel } : {}),
        ...(options.channelRemotePerson ? { remotePerson: options.channelRemotePerson } : {}),
@@ -765,10 +765,10 @@ index 86e62d3eb..c0bd5aa51 100644
          list: (channelId) => this.#channelRoutines.list(channelId),
          create: (input) => this.#channelRoutines.create(input),
 diff --git a/src/backend/agent/openbot-tool-router.ts b/src/backend/agent/openbot-tool-router.ts
-index 78a0663e7..a9de8f2e6 100644
+index 17e93c180..50e40a9a3 100644
 --- a/src/backend/agent/openbot-tool-router.ts
 +++ b/src/backend/agent/openbot-tool-router.ts
-@@ -1768,16 +1768,22 @@ export class OpenBotToolRouter {
+@@ -1917,16 +1917,22 @@ export class OpenBotToolRouter {
      );
      if (flowResult) return flowResult;
  
@@ -793,12 +793,13 @@ index 78a0663e7..a9de8f2e6 100644
        return openBotToolFailure("A team member's message cannot read workflows. Ask the member to use Workflows.");
      // The agent list is read only for a workflow tool, not on each OpenBot tool call.
      if (WORKFLOW_TOOL_NAMES.has(params.tool)) {
-@@ -2245,11 +2251,13 @@ export class OpenBotToolRouter {
-    * does a side thread that the person opened, or branched, and that takes no routine runs. A channel
-    * task and a Slack or Telegram message also arrive as `user`, so a thread linked to either does not.
+@@ -2403,12 +2409,14 @@ export class OpenBotToolRouter {
+    * `threadId` can be the provider's id: the checks below need the public id, or an external chat
+    * passes as the agent's own chat.
     */
--  #requestedByPerson(agentId: string, turnId: string, executionThreadId: string): boolean {
-+  #requestedByPerson(agentId: string, turnId: string, executionThreadId: string, admins = false): boolean {
+-  #requestedByPerson(agentId: string, turnId: string, threadId: string): boolean {
++  #requestedByPerson(agentId: string, turnId: string, threadId: string, admins = false): boolean {
+     const executionThreadId = this.#conversation.publicThreadId(agentId, threadId);
      const deliveries = this.#mailbox.findDeliveriesByTurn(agentId, turnId);
      return (
        deliveries.length > 0 &&
@@ -809,8 +810,8 @@ index 78a0663e7..a9de8f2e6 100644
        (!this.#conversation.isExecutionThread(executionThreadId) ||
          (this.#tasks.isPersonThread(agentId, executionThreadId) &&
            !this.#messaging.store.linkForThread(executionThreadId) &&
-@@ -2257,10 +2265,26 @@ export class OpenBotToolRouter {
-     );
+@@ -2434,10 +2442,26 @@ export class OpenBotToolRouter {
+     return { success: false, contentItems: [{ type: "inputText", text }] };
    }
  
 -  /** Whether a team member on another computer sent this message. */
@@ -840,10 +841,10 @@ index 78a0663e7..a9de8f2e6 100644
  
    /** Whether a team member on another computer sent a message of this turn. */
 diff --git a/src/backend/channel-service.ts b/src/backend/channel-service.ts
-index 7d2a9440c..478178041 100644
+index e02a3c5fa..c379e333d 100644
 --- a/src/backend/channel-service.ts
 +++ b/src/backend/channel-service.ts
-@@ -128,6 +128,11 @@ export interface ChannelHooks {
+@@ -132,6 +132,11 @@ export interface ChannelHooks {
    personAgentLevel?(personId: string, agentId: string): AgentAccessLevel;
    /** Whether the person who asked uses a remote client, which has only the released routine schedules. */
    remotePerson?(personId: string): boolean;
@@ -855,7 +856,7 @@ index 7d2a9440c..478178041 100644
    /** The schedule routines of the channels, for the routine tools. Omitted, those tools fail. */
    routines?: ChannelRoutineToolPort;
    error(error: unknown): void;
-@@ -891,6 +896,15 @@ export class ChannelService {
+@@ -895,6 +900,15 @@ export class ChannelService {
          const open = allTasks.filter((task) => !terminal(task));
          const eligible = this.eligibleMembers(current);
          const recipients = this.#recipients(eligible, text, command.recipientAgentId);
@@ -871,8 +872,8 @@ index 7d2a9440c..478178041 100644
          const continues =
            /^(?:also|instead|actually|please change|change that|correction|continue|resume|go on|keep going|yes|no|use that|make it)\b/iu.test(
              text.trim(),
-@@ -3266,6 +3280,24 @@ export class ChannelService {
-     return person !== null && !(this.hooks.remotePerson?.(person.id) ?? false);
+@@ -3293,6 +3307,24 @@ export class ChannelService {
+     };
    });
  
 +  /**
@@ -897,10 +898,10 @@ index 7d2a9440c..478178041 100644
      this: ChannelService,
      channelId: string,
 diff --git a/src/backend/channel-store.ts b/src/backend/channel-store.ts
-index b091c48d8..b5eca74c9 100644
+index e1e537d74..c39a2d244 100644
 --- a/src/backend/channel-store.ts
 +++ b/src/backend/channel-store.ts
-@@ -981,6 +981,16 @@ export class ChannelStore {
+@@ -1012,6 +1012,16 @@ export class ChannelStore {
      }
    }
  
@@ -918,10 +919,10 @@ index b091c48d8..b5eca74c9 100644
      const maximum = this.page(channelId).throughSequence;
      if (throughSequence > maximum) throw new Error("The read position exceeds the channel history.");
 diff --git a/src/main/application-services.ts b/src/main/application-services.ts
-index 4b1e26470..930f328a6 100644
+index c6d0501b3..2659bcf63 100644
 --- a/src/main/application-services.ts
 +++ b/src/main/application-services.ts
-@@ -2187,6 +2187,7 @@ export async function createApplicationServices({
+@@ -2297,6 +2297,7 @@ export async function createApplicationServices({
      // `host` is built later, after the agent service; a channel tool reads it when it runs.
      channelPersonAgentLevel: (personId, agentId) => host.channelPersonAgentLevel(personId, agentId),
      channelRemotePerson: (personId) => host.channelPersonIsRemote(personId),
@@ -1004,7 +1005,7 @@ index 000000000..98f60cf00
 +  }
 +}
 diff --git a/src/main/desktop-notifications.ts b/src/main/desktop-notifications.ts
-index d6bdb2401..f2192494c 100644
+index 56604c1bd..08a29a5e5 100644
 --- a/src/main/desktop-notifications.ts
 +++ b/src/main/desktop-notifications.ts
 @@ -21,6 +21,8 @@ export function desktopShowsAgentEvent(
@@ -1017,7 +1018,7 @@ index d6bdb2401..f2192494c 100644
  }
  
 diff --git a/src/main/host-service.ts b/src/main/host-service.ts
-index f0b30dd67..a14941584 100644
+index 43f38bead..6c051f76a 100644
 --- a/src/main/host-service.ts
 +++ b/src/main/host-service.ts
 @@ -43,6 +43,7 @@ import type {
@@ -1028,7 +1029,7 @@ index f0b30dd67..a14941584 100644
    conversationMessageSender,
    DEFAULT_REMOTE_CONTROL_POLICY,
    isAvatarColor,
-@@ -472,6 +473,39 @@ export class HostService extends EventEmitter<HostEvents> {
+@@ -474,6 +475,39 @@ export class HostService extends EventEmitter<HostEvents> {
              liveActivityShows: (sessionId, subject, alert, startedAt) =>
                this.#liveActivityPush?.showsEvent(sessionId, subject, alert, startedAt) ?? false,
              channelForThread: (threadId) => this.channelForThread(threadId),
@@ -1068,7 +1069,7 @@ index f0b30dd67..a14941584 100644
              logger,
            })
          : undefined;
-@@ -2205,7 +2239,22 @@ export class HostService extends EventEmitter<HostEvents> {
+@@ -2209,7 +2243,22 @@ export class HostService extends EventEmitter<HostEvents> {
      }
    }
  
@@ -1092,7 +1093,7 @@ index f0b30dd67..a14941584 100644
      return this.#options.channels?.store.list(this.channelActor().id, true) ?? [];
    }
 diff --git a/src/main/push-notifications.ts b/src/main/push-notifications.ts
-index b3982c502..3481b401a 100644
+index a1095e06f..021961777 100644
 --- a/src/main/push-notifications.ts
 +++ b/src/main/push-notifications.ts
 @@ -13,7 +13,7 @@ import {
@@ -1191,7 +1192,7 @@ index b3982c502..3481b401a 100644
      // A side thread's turn notifies as a turn of the chat does. Its answer is in that thread.
      const thread = received.type === "thread-turn-completed" ? received : null;
      const event = thread ? thread.turn : received;
-@@ -444,6 +475,92 @@ export class PushNotificationService {
+@@ -451,6 +482,92 @@ export class PushNotificationService {
      }
    });
  
@@ -1284,7 +1285,7 @@ index b3982c502..3481b401a 100644
    /** The answer of a turn in the agent's own chat or in a side thread, or `null` when it has none. */
    #answer = Effect.fn("PushNotifications.answer")(function* (
      this: PushNotificationService,
-@@ -474,6 +591,7 @@ export class PushNotificationService {
+@@ -481,6 +598,7 @@ export class PushNotificationService {
      registration: Registration,
      content: PushNotificationContent,
      shortBody: string,
@@ -1292,7 +1293,7 @@ index b3982c502..3481b401a 100644
    ) {
      const { stored, keys } = registration;
      let sealed = sealPushNotification(content, keys, this.#options.randomBytes(LIVE_ACTIVITY_NONCE_BYTES));
-@@ -486,6 +604,7 @@ export class PushNotificationService {
+@@ -493,6 +611,7 @@ export class PushNotificationService {
      if (!request) return;
      // A Mac that wakes before its network, or a short fault at Apple or Google, refuses one send.
      for (let attempt = 0; ; attempt += 1) {
@@ -1300,7 +1301,7 @@ index b3982c502..3481b401a 100644
        const result = yield* Effect.result(this.#options.send(request));
        if (Result.isSuccess(result)) {
          // The session ended, the app was removed, or Apple or Google refused the token.
-@@ -515,6 +634,7 @@ export class PushNotificationService {
+@@ -522,6 +641,7 @@ export class PushNotificationService {
    #dropHeld(registration: Registration): void {
      this.#clearFlush(registration);
      registration.held = [];
@@ -1308,7 +1309,7 @@ index b3982c502..3481b401a 100644
    }
  
    #clearFlush(registration: Registration): void {
-@@ -539,7 +659,7 @@ export class PushNotificationService {
+@@ -546,7 +666,7 @@ export class PushNotificationService {
  
    /** Sends the kept events of a phone that is away, after a short wait for the phone to say that it is back. */
    #scheduleFlush(registration: Registration): void {
@@ -1317,7 +1318,7 @@ index b3982c502..3481b401a 100644
      registration.flushTimer = setTimeout(() => {
        registration.flushTimer = null;
        if (this.#registrations.get(registration.stored.sessionId) !== registration) return;
-@@ -552,7 +672,10 @@ export class PushNotificationService {
+@@ -559,7 +679,10 @@ export class PushNotificationService {
      if (!value.away && registration.connected) return;
      const now = this.#now();
      const held = registration.held.filter((item) => now - item.at < HELD_EVENT_MS);
@@ -1329,10 +1330,10 @@ index b3982c502..3481b401a 100644
      const snapshot = this.#options.agents.getRuntimeSnapshot();
      const reads = this.#options.agents.listConversationReads(
 diff --git a/src/main/remote-server-manager.ts b/src/main/remote-server-manager.ts
-index ef09ae887..a309b3b4c 100644
+index 990d4fb52..d8d0d1f85 100644
 --- a/src/main/remote-server-manager.ts
 +++ b/src/main/remote-server-manager.ts
-@@ -1901,6 +1901,22 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
+@@ -1921,6 +1921,22 @@ export class RemoteServerManager extends EventEmitter<RemoteServerEvents> {
      });
    }
  
@@ -1356,7 +1357,7 @@ index ef09ae887..a309b3b4c 100644
      return this.#withMemberChatColors(serverId, this.#presence.get(serverId));
    }
 diff --git a/src/main/renderer-forwarders.ts b/src/main/renderer-forwarders.ts
-index 955a97979..dac03f404 100644
+index 077c992ed..aa9e11154 100644
 --- a/src/main/renderer-forwarders.ts
 +++ b/src/main/renderer-forwarders.ts
 @@ -21,6 +21,7 @@ import {
@@ -1365,9 +1366,9 @@ index 955a97979..dac03f404 100644
    type ClientAgentSummary,
 +  decodeChannelPage,
    decodeChannelSummaries,
+   type HiddenAgentsSnapshot,
    IPC_ENDPOINTS,
-   LOCAL_SERVER_ID,
-@@ -48,6 +49,7 @@ import {
+@@ -54,6 +55,7 @@ import {
    notificationRequestKey,
  } from "@openbot/team-client/agent-notifications";
  import {
@@ -1375,7 +1376,7 @@ index 955a97979..dac03f404 100644
    channelForThread,
    channelReplyNotifications,
    newChannelReplies,
-@@ -79,6 +81,7 @@ export interface RendererForwarderDependencies {
+@@ -91,6 +93,7 @@ export interface RendererForwarderDependencies {
    getHostAnalytics: () => HostAnalytics | null;
    getRemoteServerManager: () => Pick<
      RemoteServerManager,
@@ -1383,7 +1384,7 @@ index 955a97979..dac03f404 100644
      | "activeServerId"
      | "list"
      | "request"
-@@ -158,6 +161,7 @@ export function createRendererForwarders({
+@@ -171,6 +174,7 @@ export function createRendererForwarders({
     * change sets the baseline and its completion notifies.
     */
    const channelLists = new Map<string, ChannelSummary[]>();
@@ -1391,7 +1392,7 @@ index 955a97979..dac03f404 100644
    /** The servers whose channel list is being read. True when a change came in during the read. */
    const channelReads = new Map<string, boolean>();
    /** The shown reply notification of each channel. A newer reply replaces it. */
-@@ -179,7 +183,8 @@ export function createRendererForwarders({
+@@ -192,7 +196,8 @@ export function createRendererForwarders({
     * on its own when the list has none.
     */
    function refreshChannels(serverId: string): void {
@@ -1401,7 +1402,7 @@ index 955a97979..dac03f404 100644
        channelLists.delete(serverId);
        return;
      }
-@@ -214,26 +219,52 @@ export function createRendererForwarders({
+@@ -227,26 +232,52 @@ export function createRendererForwarders({
    async function notifyChannelReplies(serverId: string, next: ChannelSummary[]): Promise<void> {
      const previous = channelLists.get(serverId) ?? null;
      channelLists.set(serverId, next);
@@ -1468,7 +1469,7 @@ index 955a97979..dac03f404 100644
        const key = `${serverId}\n${reply.channelId}`;
        const notification = new Notification({ title: reply.title, body: reply.body });
 diff --git a/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx b/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
-index 99ffdbe1c..89df6b44e 100644
+index 7c622aed2..29d81a0f4 100644
 --- a/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
 +++ b/src/renderer/src/features/channels/WorkspaceChannelConversation.tsx
 @@ -1,4 +1,5 @@
@@ -1488,10 +1489,10 @@ index 99ffdbe1c..89df6b44e 100644
        messages={view.messages()}
        unreadCount={view.unreadCount()}
 diff --git a/src/renderer/src/features/conversation/ConversationComposer.tsx b/src/renderer/src/features/conversation/ConversationComposer.tsx
-index a97b0024e..c4eeaeba8 100644
+index f6a5a80c5..14879359c 100644
 --- a/src/renderer/src/features/conversation/ConversationComposer.tsx
 +++ b/src/renderer/src/features/conversation/ConversationComposer.tsx
-@@ -702,6 +702,7 @@ export function ConversationComposer() {
+@@ -715,6 +715,7 @@ export function ConversationComposer() {
              <ComposerEditor
                agentId={props.agent?.id}
                agents={props.mentionAgents ?? props.agents}
@@ -1500,10 +1501,10 @@ index a97b0024e..c4eeaeba8 100644
                skills={installedSkills()}
                skillsLoadFailed={installedSkillsLoadFailed()}
 diff --git a/src/renderer/src/features/conversation/conversation-types.ts b/src/renderer/src/features/conversation/conversation-types.ts
-index c30da901c..b07516ea1 100644
+index 1307ec7a9..69dad6b33 100644
 --- a/src/renderer/src/features/conversation/conversation-types.ts
 +++ b/src/renderer/src/features/conversation/conversation-types.ts
-@@ -210,6 +210,7 @@ export interface ConversationProps {
+@@ -218,6 +218,7 @@ export interface ConversationProps {
     * messages, so the desktop leaves it out; the timeline still names it from `agents`.
     */
    mentionAgents?: AgentProfile[] | undefined;
@@ -1512,18 +1513,18 @@ index c30da901c..b07516ea1 100644
    /** The agent's routines, for the chat card of a routine the agent created or changed. */
    routines?: readonly RoutineFields[] | undefined;
 diff --git a/src/renderer/src/features/web-client/WebWorkspace.tsx b/src/renderer/src/features/web-client/WebWorkspace.tsx
-index 5047cfdf3..bcdad28f4 100644
+index 9661b3341..c923631fe 100644
 --- a/src/renderer/src/features/web-client/WebWorkspace.tsx
 +++ b/src/renderer/src/features/web-client/WebWorkspace.tsx
-@@ -59,6 +59,7 @@ import {
-   AGENT_HIDDEN_CAPABILITY,
+@@ -63,6 +63,7 @@ import {
+   AGENT_HIDDEN_WORK_CAPABILITY,
    AGENT_WELCOME_CAPABILITY,
    TEAM_AGENT_CREATE_MODEL_CAPABILITY,
 +  USER_MENTIONS_CAPABILITY,
  } from "@openbot/contracts/team-protocol/current";
  import { DISCORD_ACCESS_CAPABILITY } from "@openbot/contracts/team-protocol/discord-access-v1";
  import { EVENTS_CAPABILITY } from "@openbot/contracts/team-protocol/events-v1";
-@@ -763,6 +764,13 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+@@ -807,6 +808,13 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
              threadId,
            )
          : null,
@@ -1535,9 +1536,9 @@ index 5047cfdf3..bcdad28f4 100644
 +      return api.readChannel(input);
 +    },
      readAgentLevels: workspace.runtime.listAgentNotificationLevels,
-   });
-   // A host keeps the level of the user for all devices, so the rail reads it when the host comes online.
-@@ -1763,7 +1771,7 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+     // Only the open host has a list of hidden agents. A host that stops a hidden agent keeps its level.
+     hiddenAgentIds: (hostId) =>
+@@ -1889,7 +1897,7 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
        const previous = channelBaseline?.scope === scope ? channelBaseline.channels : null;
        channelBaseline = { scope, channels: list };
        if (hostId) {
@@ -1546,7 +1547,7 @@ index 5047cfdf3..bcdad28f4 100644
          saveRemoteFrameChannels(props.accountId, hostId, list);
        }
      },
-@@ -3414,6 +3422,16 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
+@@ -3646,6 +3654,16 @@ function WebWorkspaceFrame(props: WebWorkspaceProps) {
                          agent={undefined}
                          agents={workspace.profiles()}
                          mentionAgents={channelView.mentionAgents()}
@@ -1564,7 +1565,7 @@ index 5047cfdf3..bcdad28f4 100644
                          messages={channelView.messages()}
                          unreadCount={channelView.unreadCount()}
 diff --git a/src/renderer/src/features/web-client/web-notification-routing.ts b/src/renderer/src/features/web-client/web-notification-routing.ts
-index b412941b4..e134b2f53 100644
+index 875d8aff6..b7ed5f581 100644
 --- a/src/renderer/src/features/web-client/web-notification-routing.ts
 +++ b/src/renderer/src/features/web-client/web-notification-routing.ts
 @@ -13,7 +13,7 @@ import {
@@ -1574,7 +1575,7 @@ index b412941b4..e134b2f53 100644
 -import { channelReplyNotifications } from "@openbot/team-client/channel-notifications";
 +import { ChannelMentionNotifications, channelReplyNotifications } from "@openbot/team-client/channel-notifications";
  import type { TextValue } from "@openbot/ui/text";
- import { onCleanup, untrack } from "solid-js";
+ import { createSignal, onCleanup, untrack } from "solid-js";
  import { startActionSounds } from "../../action-sounds";
 @@ -47,6 +47,11 @@ export function createWebNotificationRouting(options: {
    /** The channel of a thread on the open host, from its channel list, or null. */
@@ -1586,17 +1587,17 @@ index b412941b4..e134b2f53 100644
 +    input: import("@openbot/contracts/ipc").ChannelReadInput,
 +  ) => Promise<import("@openbot/contracts/ipc").ChannelPage>;
    readAgentLevels?: ((hostId: string) => Promise<AgentNotificationLevelsSnapshot>) | undefined;
- }) {
-   const { workspace, notifications } = options;
-@@ -54,6 +59,7 @@ export function createWebNotificationRouting(options: {
-   const agentLevels = new Map<string, ReadonlyMap<string, ServerNotificationLevel>>();
+   /** The agents of a host that the user hid. Such an agent notifies only when it waits for the user. */
+   hiddenAgentIds: (hostId: string) => ReadonlySet<string>;
+@@ -82,6 +87,7 @@ export function createWebNotificationRouting(options: {
+   }
    /** The requests whose notification waits for the levels. An answer on any device removes its key. */
    const waitingRequests = new Set<string>();
 +  const mentionTrackers = new Map<string, { readerId: string; tracker: ChannelMentionNotifications }>();
  
    async function levelsOf(hostId: string): Promise<ReadonlyMap<string, ServerNotificationLevel> | null> {
      const read = options.readAgentLevels;
-@@ -112,17 +118,43 @@ export function createWebNotificationRouting(options: {
+@@ -141,17 +147,43 @@ export function createWebNotificationRouting(options: {
      });
    }
    /** The replies that a new channel list of the open host shows. The first list is the baseline. */

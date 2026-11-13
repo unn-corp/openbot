@@ -33,6 +33,12 @@ MARKER=requestedByAdmin
 UNPACK='{**/out/main/agent-database-host.js,**/out/main/voice-transcription-host.js,**/out/main/voice-speech-host.js,**/node_modules/effect/**/*,**/node_modules/@koromix/koffi-*/**/*}'
 KEYRING=/srv/openbot-hosted
 DATA=$(readlink -f /var/lib/openbot 2>/dev/null || echo /var/lib/openbot)
+# The rollback snapshot covers the application state (database, settings, accounts, keys), not what an
+# update never touches: agent working copies and re-downloadable caches. They were 60+ GB of a 66 GB
+# home, which made the snapshot slow (a long outage) and too big to fit. The same list protects those
+# paths from the rollback's --delete.
+SNAP_EXCLUDES=(--exclude=/OpenBot/Agents/ --exclude=/OpenBot/Shared/ --exclude=/.cache/ --exclude=/.npm/
+  --exclude=/.local/share/pnpm/ --exclude=/.local/share/vitest/)
 
 NEED_START=0
 KEEPER=
@@ -213,7 +219,7 @@ rollback() {
   rm -rf "$INSTALL/.applying" "$INSTALL/staged" "$INSTALL/staged.ready"
   rm -rf "$INSTALL/app" && cp -a "$b/app" "$INSTALL/app"
   cp -a "$b/hosted/." "$INSTALL/hosted/"
-  rsync -a --delete "$b/home/" "$DATA/"
+  rsync -a --delete "${SNAP_EXCLUDES[@]}" "$b/home/" "$DATA/"
   rsync -a --delete "$b/keyring/" "$KEYRING/"
   systemctl start openbot.service
 }
@@ -221,14 +227,15 @@ rollback() {
 do_install() {
   local v; v=$(<"$INSTALL/staged.ready")
   local b=$STATE_DIR/rollback need free
-  need=$(( $(du -sk "$DATA" | cut -f1) + $(du -sk "$INSTALL/app" | cut -f1) + 2000000 ))
+  need=$(( $(du -sk --exclude=Agents --exclude=Shared --exclude=.cache --exclude=.npm --exclude=pnpm --exclude=vitest "$DATA" | cut -f1) + $(du -sk "$INSTALL/app" | cut -f1) + 4000000 ))
   free=$(df -Pk "$STATE_DIR" | awk 'NR==2{print $4}')
   [ "$free" -gt "$need" ] || fail "not enough disk for a rollback snapshot; install skipped"
   log "installing $v: stopping OpenBot and taking a snapshot"
   NEED_START=1
   systemctl stop openbot.service || fail "could not stop OpenBot"
   rm -rf "$b"; mkdir -p "$b"
-  cp -a "$DATA" "$b/home" && cp -a "$KEYRING" "$b/keyring" && cp -a "$INSTALL/app" "$b/app" && cp -a "$INSTALL/hosted" "$b/hosted" ||
+  mkdir -p "$b/home" && rsync -a "${SNAP_EXCLUDES[@]}" "$DATA/" "$b/home/" && cp -a "$KEYRING" "$b/keyring" &&
+    cp -a "$INSTALL/app" "$b/app" && cp -a "$INSTALL/hosted" "$b/hosted" ||
     { rm -rf "$b"; fail "snapshot failed; install skipped"; }
   if "$HOSTED" apply && systemctl start openbot.service && health_ok "$v"; then
     rm -rf "$b"

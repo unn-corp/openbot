@@ -13,7 +13,8 @@ How it works on the VM (`arcwright-personal`):
   official one except for `out/main/index.js`, the unpacked file set and archive entry count match,
   and the patch marker is present.
 - `unn-update-install.timer` (08:30 UTC) and the in-app **Update** button run
-  `unn-update request`: stop OpenBot, snapshot data + app (`/var/lib/unn-update/rollback`), apply,
+  `unn-update request`: stop OpenBot, snapshot app state + app (`/var/lib/unn-update/rollback`; agent working copies and caches are
+  excluded, see `SNAP_EXCLUDES`, so it is a few GB and takes about a minute), apply,
   start, wait for `OpenBot <version>` + `(online)`. On failure it restores the snapshot and marks the
   version failed. On success the snapshot is deleted.
 
