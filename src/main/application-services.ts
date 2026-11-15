@@ -2758,11 +2758,11 @@ export async function createApplicationServices({
   if (diskRestoring()) {
     updateCheckWait = Effect.runFork(
       diskRestoreEnded.pipe(
-        Effect.andThen(Effect.sync(() => providerRuntimes.startUpdateChecks({ updateInstalled: appUpgraded }))),
+        Effect.andThen(Effect.sync(() => providerRuntimes.startUpdateChecks({ updateInstalled: true }))),
       ),
     );
   } else {
-    providerRuntimes.startUpdateChecks({ updateInstalled: appUpgraded });
+    providerRuntimes.startUpdateChecks({ updateInstalled: true });
   }
   if (appUpgraded)
     void runCauseEffect(providerCliAppVersion.set({ appVersion: app.getVersion() })).catch((error) =>

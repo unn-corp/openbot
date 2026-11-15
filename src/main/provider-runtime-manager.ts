@@ -280,7 +280,7 @@ export class ProviderRuntimeManager extends EventEmitter<ProviderRuntimeManagerE
   #checkRetentionMs = VERSION_RETENTION_MS;
   #revision = 0;
   #stopping = false;
-  /** Set by `startUpdateChecks` after an app upgrade; the first check spends it. */
+  /** Set by `startUpdateChecks` to update installed CLIs on every check. */
   #updateInstalled = false;
 
   constructor(options: ProviderRuntimeManagerOptions) {
@@ -548,8 +548,7 @@ export class ProviderRuntimeManager extends EventEmitter<ProviderRuntimeManagerE
   /**
    * Checks now and then every hour, until `stop`. The caller starts it once the app is up.
    *
-   * `updateInstalled` is for the first start after an app upgrade: the first check then updates
-   * each managed provider CLI that has a newer version, with no offer to the user (#3164).
+   * `updateInstalled` updates enabled managed provider CLIs on every check.
    */
   startUpdateChecks(options: { intervalMs?: number; updateInstalled?: boolean } = {}): void {
     if (this.#checkTimer || !this.#target || this.#stopping) return;
@@ -591,7 +590,6 @@ export class ProviderRuntimeManager extends EventEmitter<ProviderRuntimeManagerE
           (provider) => Effect.ignore(this.#startDownload(provider, target)),
           { discard: true },
         );
-        this.#updateInstalled = false;
       }
       this.#revision += 1;
       this.emit("status", this.getStatus());
