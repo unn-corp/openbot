@@ -16,7 +16,7 @@ export interface PushNotificationKeys {
   tag: Uint8Array;
 }
 
-export type PushNotificationKind = "reply" | "failed" | "input" | "approval" | "browser";
+export type PushNotificationKind = "reply" | "failed" | "input" | "approval" | "browser" | "mention";
 
 /** What the extension shows, and what the app opens when the user taps the notification. */
 export interface PushNotificationContent {
@@ -24,6 +24,8 @@ export interface PushNotificationContent {
   agentId: string;
   threadId: string | null;
   kind: PushNotificationKind;
+  /** Present only for user-mentions-v1 peers. A person-written post has no agent thread. */
+  channelId?: string;
   title: string;
   body: string;
 }

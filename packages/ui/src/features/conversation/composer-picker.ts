@@ -1,7 +1,14 @@
 import type { DraftAttachment } from "@openbot/contracts/ipc";
 import type { AppTextKey } from "@openbot/i18n";
 import { Bot, File, Folder, Plug, type Puzzle, ShieldCheck, Store, UsersRound } from "@openbot/ui";
-import type { ComposerAgent, ComposerBrowserTab, ComposerMcpServer, ComposerSkill, ComposerThread } from "../../data";
+import type {
+  ComposerAgent,
+  ComposerBrowserTab,
+  ComposerMcpServer,
+  ComposerSkill,
+  ComposerThread,
+  ComposerUser,
+} from "../../data";
 import type { TextValue } from "../../text";
 import { browserDisplayUrl } from "../browser/browser-suggestions";
 
@@ -18,6 +25,7 @@ export interface PickerFrame {
 
 export type PickerOption =
   | { type: "agent"; agent: ComposerAgent }
+  | { type: "user"; user: ComposerUser }
   /** Addresses every member of a channel. It inserts the text `@everyone`. */
   | { type: "everyone" }
   /** `showSlug` is set when another listed skill has the same name: the slug tells them apart. */
@@ -40,6 +48,7 @@ export interface PickerSection {
 }
 
 export function pickerOptionKey(option: PickerOption): string {
+  if (option.type === "user") return `user:${option.user.id}`;
   if (option.type === "agent") return `agent:${option.agent.id}`;
   if (option.type === "everyone") return "everyone";
   if (option.type === "skill") return `skill:${option.skill.skillId}`;
@@ -49,6 +58,7 @@ export function pickerOptionKey(option: PickerOption): string {
 }
 
 export function pickerOptionText(option: PickerOption, t: TextValue["t"]): string {
+  if (option.type === "user") return t("composer.picker.option.user", { name: option.user.name });
   if (option.type === "agent") return t("composer.picker.option.agent", { name: option.agent.name });
   if (option.type === "everyone") return t("composer.picker.everyone");
   if (option.type === "skill") {
@@ -63,6 +73,7 @@ export function pickerOptionText(option: PickerOption, t: TextValue["t"]): strin
 }
 
 export function pickerOptionName(option: PickerOption, t: TextValue["t"]): string {
+  if (option.type === "user") return option.user.name;
   if (option.type === "agent") return option.agent.name;
   if (option.type === "everyone") return t("composer.picker.everyone");
   if (option.type === "skill") return option.skill.name;
@@ -76,6 +87,7 @@ export function pickerOptionDescription(
   t: TextValue["t"],
   format: TextValue["format"],
 ): string | undefined {
+  if (option.type === "user") return option.user.username;
   if (option.type === "everyone") return t("composer.picker.everyoneDescription");
   if (option.type === "attachment") return format.fileSize(option.attachment.size);
   if (option.type === "skill") return skillDescription(option.skill);
@@ -145,7 +157,7 @@ export function pickerOptionBadge(
   t: TextValue["t"],
 ): { label: string; icon?: typeof Puzzle } | null {
   // The section title says that a row is a tab, so a tab row needs no badge.
-  if (option.type === "tab") return null;
+  if (option.type === "tab" || option.type === "user") return null;
   if (option.type === "thread") return { label: t(THREAD_STATE_LABELS[threadStateLabel(option.thread)]) };
   if (option.type === "agent") return { label: t("composer.picker.badge.agent"), icon: Bot };
   if (option.type === "everyone") return { label: t("composer.picker.badge.channel"), icon: UsersRound };

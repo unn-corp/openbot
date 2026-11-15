@@ -61,7 +61,7 @@ const UNAVAILABLE_TAG_LABELS = {
  * keeps the name it had when the message was sent, as an MCP server does: the message records what
  * the user asked.
  */
-type UnavailableTagKind = Exclude<ChatTagKind, "quote" | "tab" | "thread">;
+type UnavailableTagKind = Exclude<ChatTagKind, "user" | "quote" | "tab" | "thread">;
 
 export function RichMessageText(props: RichMessageTextProps) {
   const { t } = useText();
@@ -468,7 +468,9 @@ function semanticTagParts(body: string, agents: ComposerAgent[], skills: Compose
   let cursor = 0;
   for (const reference of references) {
     if (reference.start > cursor) parts.push({ text: body.slice(cursor, reference.start) });
-    if (reference.kind === "agent") {
+    if (reference.kind === "user") {
+      parts.push({ text: `@${reference.name}` });
+    } else if (reference.kind === "agent") {
       const agent = agents.find((candidate) => candidate.id === reference.id);
       parts.push(agent ? { text: agent.name, agent } : { text: reference.name, unavailableKind: "agent" });
     } else if (reference.kind === "mcp") {

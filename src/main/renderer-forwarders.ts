@@ -21,6 +21,7 @@ import {
   type BrowserDisplayState,
   type ChannelSummary,
   type ClientAgentSummary,
+  decodeChannelPage,
   decodeChannelSummaries,
   type HiddenAgentsSnapshot,
   IPC_ENDPOINTS,
@@ -54,6 +55,7 @@ import {
   notificationRequestKey,
 } from "@openbot/team-client/agent-notifications";
 import {
+  ChannelMentionNotifications,
   channelForThread,
   channelReplyNotifications,
   newChannelReplies,
@@ -91,6 +93,7 @@ export interface RendererForwarderDependencies {
   getHostAnalytics: () => HostAnalytics | null;
   getRemoteServerManager: () => Pick<
     RemoteServerManager,
+    | "notificationMemberId"
     | "activeServerId"
     | "list"
     | "request"
@@ -171,6 +174,7 @@ export function createRendererForwarders({
    * change sets the baseline and its completion notifies.
    */
   const channelLists = new Map<string, ChannelSummary[]>();
+  const channelMentions = new Map<string, { readerId: string; tracker: ChannelMentionNotifications }>();
   /** The servers whose channel list is being read. True when a change came in during the read. */
   const channelReads = new Map<string, boolean>();
   /** The shown reply notification of each channel. A newer reply replaces it. */
@@ -192,7 +196,8 @@ export function createRendererForwarders({
    * on its own when the list has none.
    */
   function refreshChannels(serverId: string): void {
-    if (replyLevel(serverId) !== "all") {
+    if (!replyLevel(serverId) || replyLevel(serverId) === "nothing") {
+      channelMentions.delete(serverId);
       channelLists.delete(serverId);
       return;
     }
@@ -227,26 +232,52 @@ export function createRendererForwarders({
   async function notifyChannelReplies(serverId: string, next: ChannelSummary[]): Promise<void> {
     const previous = channelLists.get(serverId) ?? null;
     channelLists.set(serverId, next);
+    const host = getHostService();
+    const manager = getRemoteServerManager();
+    const readerId = serverId === LOCAL_SERVER_ID ? host?.channelActor().id : manager?.notificationMemberId(serverId);
+    let mentions: import("@openbot/team-client/channel-notifications").ChannelNotificationContent[] = [];
+    if (readerId) {
+      let tracking = channelMentions.get(serverId);
+      if (!tracking || tracking.readerId !== readerId) {
+        tracking = { readerId, tracker: new ChannelMentionNotifications() };
+        channelMentions.set(serverId, tracking);
+      }
+      mentions = await tracking.tracker.read(next, {
+        readerId,
+        readPage: async (input) => {
+          if (serverId === LOCAL_SERVER_ID && host) return host.readChannelNotificationPage(input);
+          if (!manager) throw new Error("Remote server is unavailable.");
+          return runCauseEffect(
+            manager.request(serverId, CHANNEL_ROUTES.read, decodeChannelPage, { method: "POST", body: input }),
+          );
+        },
+        translate: getTranslate(),
+        redact: notificationPreviewEnabled() ? redactText : null,
+      });
+    }
     if (!previous || !Notification.isSupported()) return;
     const level = () => {
       const window = getMainWindow();
       if (!window || window.isDestroyed() || appFocused(window)) return null;
       return replyLevel(serverId);
     };
-    // Only "all" notifies a reply. The agent lookup is skipped at the other levels, and while a
-    // reply streams, when no reply is new.
-    if (level() !== "all" || newChannelReplies(previous, next).length === 0) return;
-    const agentLookup = notificationAgents(serverId);
-    const agents = agentLookup instanceof Promise ? await agentLookup : agentLookup;
-    // The settings are read again: the user can change them while the lookup runs.
     const current = level();
-    if (!current) return;
-    const replies = channelReplyNotifications(previous, next, {
-      agents,
-      translate: getTranslate(),
-      level: current,
-      redact: notificationPreviewEnabled() ? redactText : null,
-    });
+    if (!current || current === "nothing") return;
+    const replies = [...mentions];
+    if (current === "all" && newChannelReplies(previous, next).length > 0) {
+      const agentLookup = notificationAgents(serverId);
+      const agents = agentLookup instanceof Promise ? await agentLookup : agentLookup;
+      if (!level() || level() === "nothing") return;
+      const mentionedChannels = new Set(mentions.map((mention) => mention.channelId));
+      replies.push(
+        ...channelReplyNotifications(previous, next, {
+          agents,
+          translate: getTranslate(),
+          level: level() ?? "nothing",
+          redact: notificationPreviewEnabled() ? redactText : null,
+        }).filter((reply) => !mentionedChannels.has(reply.channelId)),
+      );
+    }
     for (const reply of replies) {
       const key = `${serverId}\n${reply.channelId}`;
       const notification = new Notification({ title: reply.title, body: reply.body });

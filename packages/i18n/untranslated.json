@@ -1,4 +1,7 @@
 {
+  "composer.picker.section.users": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+  "composer.picker.option.user": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
+  "notification.userMention": ["ar", "de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
   "account.login.companyDescription": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
   "account.login.companyOpenAgain": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],
   "account.login.companyOpenFailed": ["de", "es", "fr", "it", "ja", "ko", "nl", "pl", "pt", "ru", "tr", "zh"],

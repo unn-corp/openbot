@@ -332,3 +332,16 @@ export const WithTabAndThreadTags: Story = {
   },
   render: (storyArgs) => composerFrame(storyArgs, { width: "480px", compact: true }),
 };
+
+/** People stay distinct by username, including two members with the same display name. */
+export const UserMentions: Story = {
+  args: {
+    agentId: undefined,
+    users: [
+      { id: "member-alex-design", name: "Alex", username: "alex.design@example.invalid" },
+      { id: "member-alex-dev", name: "Alex", username: "alex.dev@example.invalid" },
+    ],
+    value: `${serializeChatTagReference("user", "Alex", "member-alex-design")} please review this.`,
+  },
+  render: (storyArgs) => composerFrame(storyArgs, { width: "480px" }),
+};
