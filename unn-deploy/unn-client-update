@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Follow the healthy server's patched Linux runtime. SSH supplies authentication."""
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path('/mnt/Storage/Applications/OpenBot-UNN')
+SSH = ['ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15',
+       '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3',
+       '-p', '26051', 'devotek@mothership.unnportal.io']
+EXPORT = 'sudo -n /usr/local/sbin/unn-openbot-client-export '
+
+
+def digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def active(directory):
+    # Keep files that a running desktop process can still load after the switch.
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        for name in ('exe', 'cwd'):
+            try:
+                target = (entry / name).resolve(strict=True)
+                if target.is_relative_to(directory):
+                    return True
+            except (OSError, RuntimeError):
+                pass
+    return False
+
+
+def remove_unused(releases, current):
+    for previous in releases.iterdir():
+        if previous != current and previous.is_dir() and not previous.is_symlink() and (previous / '.unn-managed').is_file():
+            if not active(previous):
+                shutil.rmtree(previous)
+
+
+def update():
+    if (ROOT / 'hold').exists():
+        print('Updates paused by hold file.')
+        return
+    info = subprocess.check_output(SSH + [EXPORT + 'info'], text=True, timeout=90).strip()
+    match = re.fullmatch(r'(\d+\.\d+\.\d+) ([a-f0-9]{64})', info)
+    if not match:
+        raise RuntimeError('Server returned invalid runtime metadata.')
+    version, sha = match.groups()
+    key = f'{version}-{sha}'
+    current = ROOT / 'current'
+    if current.is_symlink():
+        old = current.resolve(strict=True)
+        old_version = old.name.split('-')[0]
+        if tuple(map(int, version.split('.'))) < tuple(map(int, old_version.split('.'))):
+            raise RuntimeError('Server version is older. Automatic desktop downgrade is blocked.')
+        if old.name == key and digest(old / 'resources/app.asar') == sha:
+            remove_unused(ROOT / 'releases', old)
+            print(f'Patched client {version} already matches the server.')
+            return
+    releases = ROOT / 'releases'
+    releases.mkdir(exist_ok=True)
+    destination = releases / key
+    if not destination.exists():
+        with tempfile.TemporaryDirectory(prefix='.download-', dir=ROOT) as temporary:
+            work = Path(temporary)
+            archive = work / 'runtime.tar.gz'
+            with archive.open('wb') as output:
+                subprocess.run(SSH + [EXPORT + 'archive'], stdout=output, check=True, timeout=900)
+            unpacked = work / 'runtime'
+            unpacked.mkdir()
+            subprocess.run(['tar', '--extract', '--gzip', '--no-same-owner', '--no-same-permissions',
+                            '--file', str(archive), '--directory', str(unpacked)], check=True, timeout=120)
+            if digest(unpacked / 'resources/app.asar') != sha:
+                raise RuntimeError('Runtime changed during download. Retry on the next timer run.')
+            desktop_versions = [line.split('=', 1)[1] for desktop in unpacked.glob('*.desktop')
+                                for line in desktop.read_text().splitlines()
+                                if line.startswith('X-AppImage-Version=')]
+            if desktop_versions != [version] or not os.access(unpacked / 'openbot', os.X_OK):
+                raise RuntimeError('Runtime version or executable is invalid.')
+            (unpacked / '.unn-managed').write_text(info + '\n')
+            unpacked.rename(destination)
+    if (destination / '.unn-managed').read_text().strip() != info or digest(destination / 'resources/app.asar') != sha:
+        raise RuntimeError('Existing runtime does not match the server.')
+    pending = ROOT / '.current-new'
+    pending.unlink(missing_ok=True)
+    pending.symlink_to(destination)
+    pending.replace(current)
+    print(f'Patched client {version} ready. It takes effect on the next launch.')
+    remove_unused(releases, destination)
+
+
+if __name__ == '__main__':
+    ROOT.mkdir(parents=True, exist_ok=True)
+    with (ROOT / 'update.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            update()
+        except BlockingIOError:
+            print('Another client update is running.')
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+            print(f'Client update failed: {error}', file=sys.stderr)
+            sys.exit(1)

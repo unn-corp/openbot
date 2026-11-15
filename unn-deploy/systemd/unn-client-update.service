@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync the patched OpenBot desktop client with its server
+
+[Service]
+Type=oneshot
+ExecStart=/mnt/Storage/Applications/OpenBot-UNN/bin/unn-client-update
+TimeoutStartSec=20min
+UMask=0077
+Nice=10

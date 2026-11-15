@@ -60,6 +60,10 @@ version_of() { sed -n 's/^X-AppImage-Version=//p' "$1"/*.desktop 2>/dev/null | h
 newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | tail -n 1)" = "$1" ]; }
 as_build() { runuser -u "$BUILD_USER" -- env HOME="$STATE_DIR/home" NPM_CONFIG_USERCONFIG=/dev/null "$@"; }
 is_failed() { grep -qxF "$1" "$STATE_DIR/failed" 2>/dev/null; }
+notify_failure() {
+  [ ! -x "$LIB/unn-notify-failure" ] || "$LIB/unn-notify-failure" "$1" ||
+    log "T3 repair webhook not delivered; will retry on the next update check"
+}
 
 # A patched release is staged and complete.
 patched_ready() {
@@ -170,7 +174,7 @@ stage() {
   [ -e "$STATE_DIR/hold" ] && { log "hold file present; not staging"; return 0; }
   local latest; latest=$(latest_version) || fail "cannot read the release manifest"
   [[ $latest =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "bad manifest version"
-  if is_failed "$latest"; then log "v$latest failed before; not retrying (see $STATE_DIR/failed)"; return 1; fi
+  if is_failed "$latest"; then notify_failure "$latest"; return 1; fi
   local current; current=$(version_of "$INSTALL/app")
   newer "$latest" "$current" || return 0
   if patched_ready && [ "$(<"$INSTALL/staged.ready")" = "$latest" ]; then return 0; fi
@@ -186,6 +190,7 @@ stage() {
   if ! ( build_patched "$v" ); then
     rm -rf "$INSTALL/staged" "$WORK/$v"
     echo "$v" >>"$STATE_DIR/failed"
+    notify_failure "$v"
     fail "patched build of $v failed; the unpatched release was discarded"
   fi
   local w=$WORK/$v s=$INSTALL/staged/resources
@@ -205,7 +210,7 @@ health_ok() {
   for i in $(seq 1 48); do
     sleep 5
     if systemctl is-active --quiet openbot.service; then
-      out=$(openbot status 2>&1 || true)
+      out=$(timeout 10 openbot status 2>&1 || true)
       if grep -q "OpenBot $want" <<<"$out" && grep -q "(online)" <<<"$out"; then return 0; fi
     fi
   done

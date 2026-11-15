@@ -6,6 +6,8 @@ id unnbuild >/dev/null 2>&1 || useradd --system --home-dir /var/lib/unn-update/h
 install -d -m 0755 /usr/local/lib/unn-openbot /var/lib/unn-update
 install -d -o unnbuild -m 0755 /var/lib/unn-update/work
 install -m 0755 "$here/unn-update" /usr/local/lib/unn-openbot/unn-update
+install -m 0755 "$here/unn-client-export" /usr/local/lib/unn-openbot/unn-client-export
+install -m 0755 "$here/unn-notify-failure" /usr/local/lib/unn-openbot/unn-notify-failure
 install -m 0644 "$here/unn.patch" /usr/local/lib/unn-openbot/unn.patch
 : >/var/lib/unn-update/failed.tmp && rm -f /var/lib/unn-update/failed.tmp   # keeps `failed` as is
 for u in openbot-update.service openbot-update-request.service openbot-update.timer; do

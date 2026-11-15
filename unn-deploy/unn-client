@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root=/mnt/Storage/Applications/OpenBot-UNN
+app=$(readlink -e "$root/current") || { echo 'Run unn-client-update first.' >&2; exit 1; }
+# An extracted runtime uses the external updater. Do not identify it as a stock AppImage.
+unset APPIMAGE APPDIR
+exec "$app/openbot" "$@"

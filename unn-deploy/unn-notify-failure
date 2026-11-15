@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Notify the bound T3 thread once per failed version and patch digest."""
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import re
+
+STATE = Path('/var/lib/unn-update')
+CONFIG = Path('/usr/local/lib/unn-openbot/repair-webhook.curl')
+
+
+def main():
+    if len(sys.argv) != 2 or not re.fullmatch(r'\d+\.\d+\.\d+', sys.argv[1]):
+        return 2
+    if not CONFIG.is_file() or (STATE / 'repair-active').exists():
+        return 0
+    sha = hashlib.sha256(Path('/usr/local/lib/unn-openbot/unn.patch').read_bytes()).hexdigest()
+    key = f'{sys.argv[1]}:{sha}'
+    delivered = STATE / 'webhook-delivered'
+    for record in (delivered, STATE / 'repair-attempted'):
+        if record.exists() and key in record.read_text().splitlines():
+            return 0
+    payload = json.dumps({'event': 'openbot.patch_failed', 'version': sys.argv[1], 'patchSha256': sha})
+    try:
+        result = subprocess.run(['curl', '--config', str(CONFIG), '--data-binary', '@-'],
+                                input=payload.encode(), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=25)
+    except subprocess.TimeoutExpired:
+        return 1
+    if result.returncode:
+        return 1
+    with delivered.open('a') as output:
+        output.write(key + '\n')
+    print('T3 repair webhook delivered.', file=sys.stderr)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

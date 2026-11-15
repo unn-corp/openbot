@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Guest: export application files only. Never export the home or hosted keyring.
+set -euo pipefail
+case ${1:-} in info|archive) ;; *) echo 'usage: unn-client-export info|archive' >&2; exit 2 ;; esac
+[ "$#" -eq 1 ] && [ "$(id -u)" -eq 0 ] || exit 2
+exec 8>/run/unn-update.lock
+flock -w 60 8
+systemctl is-active --quiet openbot.service
+app=/opt/OpenBot/app
+version=$(sed -n 's/^X-AppImage-Version=//p' "$app"/*.desktop | head -n 1)
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+grep -q requestedByAdmin "$app/resources/app.asar"
+digest=$(sha256sum "$app/resources/app.asar" | cut -d' ' -f1)
+case $1 in
+  info) printf '%s %s\n' "$version" "$digest" ;;
+  archive) tar -C "$app" -czf - . ;;
+esac
