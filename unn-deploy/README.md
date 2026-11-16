@@ -87,11 +87,15 @@ signed-in connection or mentions behavior. Remove the desktop timer with
 
 ## Automatic repair and provider updates
 
-The deployed patch targets upstream 0.71.0. Source is on `deploy/v0.71.0-unn` in
+The patch targets upstream 0.72.0. Source is on `deploy/v0.72.0-unn` in
 `unn-corp/openbot`. It retains UNN workflow permissions, channel assignments, and user mentions.
 It also enables automatic updates on every hourly check for enabled provider CLIs managed by
 OpenBot. Custom CLI paths and system installations keep their existing behavior. Running provider
 processes keep their current version until they start again.
+
+The 0.72.0 rebase keeps upstream CRM authorization, thread search and teammate notification
+filtering alongside the UNN changes. The source branch also checks that a later eligible provider
+update still starts automatically. That verification script is not part of `unn.patch`.
 
 `unn-notify-failure` calls the T3 task **Repair OpenBot fork update conflicts**. The task is bound
 to the existing OpenBot thread and can resume it after it is settled. Keep T3 and T3 Connect
