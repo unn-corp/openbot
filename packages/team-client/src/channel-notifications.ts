@@ -1,3 +1,4 @@
+import { chatTagReferences } from "@openbot/contracts/chat-tag-references";
 import type {
   ChannelPreview,
   ChannelSummary,
@@ -12,6 +13,11 @@ export interface ChannelNotificationContent {
   body: string;
   channelId: string;
   agentId: string;
+}
+
+export interface ChannelMentionNotificationContent extends ChannelNotificationContent {
+  messageId: string;
+  sequence: number;
 }
 
 export interface ChannelNotificationOptions {
@@ -94,4 +100,106 @@ export function channelForThread(
   if (threadId === null) return null;
   const channel = channels.find((candidate) => candidate.threads?.some((thread) => thread.threadId === threadId));
   return channel ? { id: channel.id, name: channel.name } : null;
+}
+
+/**
+ * Reads full messages for mentions: the sidebar preview is truncated and has no stable member IDs.
+ * The first list is a baseline. Later lists inspect every new page, including a streamed message
+ * when it completes. Reading history does not mark it read or change the released wire contract.
+ */
+export interface ChannelMentionReadOptions {
+  readerId: string;
+  readPage: (
+    input: import("@openbot/contracts/ipc").ChannelReadInput,
+  ) => Promise<import("@openbot/contracts/ipc").ChannelPage>;
+  translate: AppTranslate;
+  redact: ((text: string) => string) | null;
+}
+
+export class ChannelMentionNotifications {
+  readonly #channels = new Map<string, { through: number; pending: Set<number>; stamp: string }>();
+
+  #initialized = false;
+  #reading: Promise<void> = Promise.resolve();
+
+  read(
+    channels: readonly ChannelSummary[],
+    options: ChannelMentionReadOptions,
+  ): Promise<ChannelMentionNotificationContent[]> {
+    const result = this.#reading.then(() => this.#read(channels, options));
+    this.#reading = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async #read(
+    channels: readonly ChannelSummary[],
+    options: ChannelMentionReadOptions,
+  ): Promise<ChannelMentionNotificationContent[]> {
+    const notifications: ChannelMentionNotificationContent[] = [];
+    const staged = new Map(this.#channels);
+    const ids = new Set(channels.map((channel) => channel.id));
+    for (const id of staged.keys()) if (!ids.has(id)) staged.delete(id);
+    for (const channel of channels) {
+      const last = channel.lastMessage;
+      const stamp = JSON.stringify([channel.revision, last]);
+      const previous =
+        this.#channels.get(channel.id) ??
+        (this.#initialized ? { through: 0, pending: new Set<number>(), stamp: "" } : undefined);
+      if (previous?.stamp === stamp) continue;
+      if (!previous && !last) {
+        staged.set(channel.id, { through: 0, pending: new Set(), stamp });
+        continue;
+      }
+      const page = await options.readPage({ channelId: channel.id });
+      const pending = new Set(previous?.pending);
+      const messages = [...page.messages];
+      let cursor = page.olderCursor;
+      const floor = previous ? Math.min(previous.through, ...pending) : page.throughSequence;
+      // The first page may contain only a single long message. Read down to the previous baseline.
+      while (previous && cursor !== null && cursor > floor) {
+        const older = await options.readPage({ channelId: channel.id, beforeSequence: cursor });
+        messages.push(...older.messages);
+        if (older.olderCursor !== null && older.olderCursor >= cursor)
+          throw new Error("Channel history did not advance.");
+        cursor = older.olderCursor;
+      }
+      const found: ChannelMentionNotificationContent[] = [];
+      for (const entry of messages.sort((a, b) => a.sequence - b.sequence)) {
+        if (!previous || (entry.sequence <= previous.through && !pending.has(entry.sequence))) continue;
+        if (entry.message.status === "streaming") {
+          pending.add(entry.sequence);
+          continue;
+        }
+        pending.delete(entry.sequence);
+        if (
+          channel.archived ||
+          entry.superseded ||
+          entry.author.id === options.readerId ||
+          entry.author.kind === "coordinator"
+        )
+          continue;
+        if (!chatTagReferences(entry.message.text).some((tag) => tag.kind === "user" && tag.id === options.readerId))
+          continue;
+        found.push({
+          title: options.translate("notification.channelTitle", { agent: entry.author.name, channel: channel.name }),
+          body:
+            (options.redact && plainPreview(options.redact(entry.message.text))) ||
+            options.translate("notification.userMention"),
+          channelId: channel.id,
+          messageId: entry.id,
+          sequence: entry.sequence,
+          agentId: entry.author.kind === "agent" ? entry.author.id : "",
+        });
+      }
+      staged.set(channel.id, { through: page.throughSequence, pending, stamp });
+      notifications.push(...found);
+    }
+    this.#initialized = true;
+    this.#channels.clear();
+    for (const [id, value] of staged) this.#channels.set(id, value);
+    return notifications;
+  }
 }

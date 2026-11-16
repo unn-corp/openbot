@@ -1,6 +1,8 @@
 import { defineMessages } from "../../message";
 
 export const messages = defineMessages("composer", {
+  "composer.picker.option.user": "Mention person {name}",
+  "composer.picker.section.users": "People",
   "composer.queueEdit.body": "You are editing a queued message. Save or cancel the edit to let it run.",
   "composer.queueEdit.cancel": "Cancel edit",
   "composer.feedbackFix.body": "Correcting report #{number}. Send the request, or cancel to keep the report as it is.",

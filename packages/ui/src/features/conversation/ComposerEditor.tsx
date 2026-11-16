@@ -29,6 +29,7 @@ import type {
   ComposerSkill,
   ComposerThread,
   ComposerThreadMessageMatch,
+  ComposerUser,
 } from "../../data";
 import { useText } from "../../text";
 import { AgentAvatar } from "../agents/AgentAvatar";
@@ -75,6 +76,7 @@ import {
   createSkillToken,
   createTabToken,
   createThreadToken,
+  createUserMentionToken,
   type EditorTagSources,
   MENTION_PATTERN,
   renderEditorValue,
@@ -95,6 +97,7 @@ import { isSendShortcutKey, type SendShortcut } from "./send-shortcut";
 interface ComposerEditorProps {
   agentId: string | undefined;
   agents: ComposerAgent[];
+  users?: ComposerUser[] | undefined;
   skills?: ComposerSkill[] | undefined;
   /** The host's MCP servers, offered by the same `$` the skills answer. */
   mcpServers?: ComposerMcpServer[] | undefined;
@@ -268,6 +271,10 @@ export function ComposerEditor(props: ComposerEditorProps) {
     { mount: undefined, bottom: 0 },
     { equals: (previous, next) => previous.mount === next.mount && previous.bottom === next.bottom },
   );
+  const matchingUsers = createMemo(() => {
+    const query = mention()?.query.trim().toLocaleLowerCase() ?? "";
+    return (props.users ?? []).filter((user) => `${user.name} ${user.username}`.toLocaleLowerCase().includes(query));
+  });
   const matchingAgents = createMemo(() => {
     const others = props.agents.filter((agent) => agent.id !== props.agentId);
     return rankAgentMentions(others, mention()?.query ?? "");
@@ -401,6 +408,11 @@ export function ComposerEditor(props: ComposerEditorProps) {
     if (trigger !== "@") return [];
     const sections: PickerSection[] = [
       {
+        id: "users",
+        title: "composer.picker.section.users",
+        options: matchingUsers().map((user) => ({ type: "user", user })),
+      },
+      {
         id: "agents",
         title: "composer.picker.section.agents",
         options: [
@@ -524,6 +536,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
       agentId: props.agentId,
       value: props.value,
       agents: props.agents,
+      users: props.users ?? [],
       skills: props.skills ?? [],
       mcpServers: props.mcpServers ?? [],
       attachments: props.attachments ?? [],
@@ -652,6 +665,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
       shown: dictating(),
       value: props.value,
       agents: props.agents,
+      users: props.users ?? [],
       skills: props.skills ?? [],
       mcpServers: props.mcpServers ?? [],
       attachments: props.attachments ?? [],
@@ -741,6 +755,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
   function tagSources(): EditorTagSources {
     return {
       agents: props.agents,
+      users: props.users ?? [],
       skills: props.skills ?? [],
       mcpServers: props.mcpServers ?? [],
       attachments: props.attachments ?? [],
@@ -836,19 +851,21 @@ export function ComposerEditor(props: ComposerEditorProps) {
     if (!range) return;
     range.deleteContents();
     const token =
-      option.type === "agent"
-        ? createMentionToken(option.agent)
-        : option.type === "everyone"
-          ? document.createTextNode(EVERYONE_MENTION)
-          : option.type === "skill"
-            ? createSkillToken(option.skill)
-            : option.type === "mcp"
-              ? createMcpToken(option.server)
-              : option.type === "tab"
-                ? createTabToken(option.tab)
-                : option.type === "thread"
-                  ? createThreadToken(option.thread)
-                  : createAttachmentToken(option.attachment, attachmentTokenActions);
+      option.type === "user"
+        ? createUserMentionToken(option.user)
+        : option.type === "agent"
+          ? createMentionToken(option.agent)
+          : option.type === "everyone"
+            ? document.createTextNode(EVERYONE_MENTION)
+            : option.type === "skill"
+              ? createSkillToken(option.skill)
+              : option.type === "mcp"
+                ? createMcpToken(option.server)
+                : option.type === "tab"
+                  ? createTabToken(option.tab)
+                  : option.type === "thread"
+                    ? createThreadToken(option.thread)
+                    : createAttachmentToken(option.attachment, attachmentTokenActions);
     const trailingSpace = document.createTextNode(" ");
     range.insertNode(trailingSpace);
     range.insertNode(token);
@@ -1330,7 +1347,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
                     >
                       {option.type === "agent" ? (
                         <AgentAvatar agent={option.agent} />
-                      ) : option.type === "everyone" ? (
+                      ) : option.type === "everyone" || option.type === "user" ? (
                         <span class="mention-picker-skill-icon" aria-hidden="true">
                           <UsersRound />
                         </span>

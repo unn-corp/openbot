@@ -41,6 +41,7 @@ interface Report {
     offerAfterOn: string | null;
     offerAfterOff: string | null;
   };
+  repeatedCheck?: { downloadsBefore: number; downloadsAfter: number };
 }
 
 const root = await mkdtemp(join(tmpdir(), "openbot-provider-update-after-app-upgrade-e2e-"));
@@ -144,6 +145,29 @@ try {
   assert.ok(!upgraded.phases[SYSTEM]?.includes("downloading"), "a CLI the user installed is left alone");
   assert.ok(!upgraded.phases[OFF]?.includes("downloading"), "an off provider is left alone");
   assert.notEqual(upgraded.systemOffer, null, "a CLI the user installed keeps its offer");
+
+  // The offline fixture leaves a download error. Re-read its old installed copy so that it is
+  // eligible for a later check; download errors themselves deliberately require Retry.
+  await runCauseEffect(upgrade.manager.initialize());
+  const downloadsBefore = upgrade.snapshots.filter(
+    (snapshot) => snapshot.providers[MANAGED].phase === "downloading",
+  ).length;
+  const repeatedUpdate = nextStatus(
+    upgrade.manager,
+    "the repeated managed update to end",
+    (snapshot) =>
+      snapshot.providers[MANAGED].phase === "download-error" &&
+      upgrade.snapshots.filter((entry) => entry.providers[MANAGED].phase === "downloading").length > downloadsBefore,
+  );
+  await runCauseEffect(upgrade.manager.checkForUpdates()).catch(() => undefined);
+  await repeatedUpdate;
+  const downloadsAfter = upgrade.snapshots.filter(
+    (snapshot) => snapshot.providers[MANAGED].phase === "downloading",
+  ).length;
+  assert.ok(downloadsAfter > downloadsBefore, "automatic updates continue on the next check");
+  assert.equal(upgrade.manager.getStatus().providers[SYSTEM].phase, "not-downloaded");
+  assert.equal(upgrade.manager.getStatus().providers[OFF].phase, "not-downloaded");
+  report.repeatedCheck = { downloadsBefore, downloadsAfter };
 
   const noUpgrade = await startManager("no-upgrade", [MANAGED, OFF]);
   managers.push(noUpgrade.manager);

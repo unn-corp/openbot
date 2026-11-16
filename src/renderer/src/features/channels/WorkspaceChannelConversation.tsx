@@ -1,4 +1,5 @@
 import type { AgentStatus, BrowserTakeoverRequest, CentralAuthUser } from "@openbot/contracts/ipc";
+import { USER_MENTIONS_CAPABILITY } from "@openbot/contracts/team-protocol/current";
 import { createMemo, Show } from "solid-js";
 import { useNavigation } from "../../navigation";
 import { usePlatform } from "../../platform";
@@ -146,6 +147,9 @@ function DesktopChannelConversation(props: { channelId: string; account: () => C
       agent={undefined}
       agents={agentList()}
       mentionAgents={view.mentionAgents()}
+      mentionUsers={teamPresence()
+        .members.filter((member) => !member.disabled && activeServerSupportsCapability(USER_MENTIONS_CAPABILITY))
+        .map((member) => ({ id: member.id, name: member.name ?? member.username, username: member.username }))}
       modelOptions={[]}
       messages={view.messages()}
       unreadCount={view.unreadCount()}

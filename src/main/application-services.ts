@@ -2479,6 +2479,7 @@ export async function createApplicationServices({
     // `host` is built later, after the agent service; a channel tool reads it when it runs.
     channelPersonAgentLevel: (personId, agentId) => host.channelPersonAgentLevel(personId, agentId),
     channelRemotePerson: (personId) => host.channelPersonIsRemote(personId),
+    channelAdminPerson: (personId) => host.channelPersonIsAdmin(personId),
     // The delete also clears the agent from workflow nodes, so the editors of those workflows load
     // the new graph. `workflowStore` is built later, after the agent service.
     deleteWithRevokedApproval: (agentId, remove) =>
@@ -2937,11 +2938,11 @@ export async function createApplicationServices({
   if (diskRestoring()) {
     updateCheckWait = Effect.runFork(
       diskRestoreEnded.pipe(
-        Effect.andThen(Effect.sync(() => providerRuntimes.startUpdateChecks({ updateInstalled: appUpgraded }))),
+        Effect.andThen(Effect.sync(() => providerRuntimes.startUpdateChecks({ updateInstalled: true }))),
       ),
     );
   } else {
-    providerRuntimes.startUpdateChecks({ updateInstalled: appUpgraded });
+    providerRuntimes.startUpdateChecks({ updateInstalled: true });
   }
   if (appUpgraded)
     void runCauseEffect(providerCliAppVersion.set({ appVersion: app.getVersion() })).catch((error) =>

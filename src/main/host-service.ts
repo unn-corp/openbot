@@ -43,6 +43,7 @@ import type {
 } from "@openbot/contracts/ipc";
 import {
   type AgentAccessLevel,
+  canAdministerServer,
   conversationMessageSender,
   DEFAULT_REMOTE_CONTROL_POLICY,
   isAvatarColor,
@@ -487,6 +488,39 @@ export class HostService extends EventEmitter<HostEvents> {
             liveActivityShows: (sessionId, subject, alert, startedAt) =>
               this.#liveActivityPush?.showsEvent(sessionId, subject, alert, startedAt) ?? false,
             channelForThread: (threadId) => this.channelForThread(threadId),
+            ...(options.channels
+              ? {
+                  channelHistory: {
+                    list: (viewer) => {
+                      const hidden = this.#api.hiddenAgentIds(viewer.protocol, viewer.capabilities, viewer.memberId);
+                      const admin = canAdministerServer(options.store.getMember(viewer.memberId)?.role ?? "member");
+                      return (
+                        options.channels?.store
+                          .list(viewer.memberId)
+                          .filter(
+                            (channel) =>
+                              admin ||
+                              !channel.members.length ||
+                              channel.members.some((member) => !hidden.has(member.agentId)),
+                          ) ?? []
+                      );
+                    },
+                    page: (viewer, input) => {
+                      if (!options.channels) throw new Error("Channels are unavailable.");
+                      const hidden = this.#api.hiddenAgentIds(viewer.protocol, viewer.capabilities, viewer.memberId);
+                      const page = options.channels.store.page(input.channelId, input.beforeSequence);
+                      return {
+                        ...page,
+                        messages: page.messages.filter(
+                          (message) => message.author.kind !== "agent" || !hidden.has(message.author.id),
+                        ),
+                      };
+                    },
+                    unread: (memberId, channelId, sequence) =>
+                      options.channels?.store.isUnread(channelId, memberId, sequence) ?? false,
+                  },
+                }
+              : {}),
             logger,
           })
         : undefined;
@@ -2263,7 +2297,22 @@ export class HostService extends EventEmitter<HostEvents> {
     }
   }
 
+  /** Whether `personId` is this computer's user or an enabled team member who owns or administers the server. */
+  channelPersonIsAdmin(personId: string): boolean {
+    if (!this.channelPersonIsRemote(personId)) return true;
+    const member = this.#options.store.getMember(personId);
+    return !!member && !member.disabled && canAdministerServer(member.role);
+  }
+
   /** The channel list as the host user reads it, as the IPC list does. Empty without channels. */
+  /** Full channel messages for local mention notifications; this read never marks history read. */
+  readChannelNotificationPage(
+    input: import("@openbot/contracts/ipc").ChannelReadInput,
+  ): import("@openbot/contracts/ipc").ChannelPage {
+    if (!this.#options.channels) throw new Error("Channels are unavailable.");
+    return this.#options.channels.store.page(input.channelId, input.beforeSequence);
+  }
+
   listChannels(): ChannelSummary[] {
     return this.#options.channels?.store.list(this.channelActor().id, true) ?? [];
   }
