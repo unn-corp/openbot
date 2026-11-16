@@ -61,7 +61,10 @@ automatic downgrade is blocked. Old managed runtimes are removed when they are n
 Downloads use a temporary directory on the same Storage filesystem and are removed on normal exit.
 
 The updater does not stop an open desktop app. Quit it and start **OpenBot** from the menu to
-use the new version. This extracted runtime has no `APPIMAGE` environment variable, so OpenBot
+use the new version. On a Wayland desktop the launcher defaults to XWayland, which restored
+remote computer video and browser images on Devotek-PC. An explicit `--ozone-platform` argument
+overrides this default. This also avoids a detached Wayland fallback relaunch being stopped
+with its original systemd service. This extracted runtime has no `APPIMAGE` environment variable, so OpenBot
 disables its stock in-app desktop updater. Use the external timer for desktop updates; server
 Update actions still use the existing patched server updater.
 

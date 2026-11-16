@@ -4,4 +4,13 @@ root=/mnt/Storage/Applications/OpenBot-UNN
 app=$(readlink -e "$root/current") || { echo 'Run unn-client-update first.' >&2; exit 1; }
 # An extracted runtime uses the external updater. Do not identify it as a stock AppImage.
 unset APPIMAGE APPDIR
-exec "$app/openbot" "$@"
+# The remote video and browser canvas can stay black with native Wayland rendering.
+# Start on XWayland directly, also avoiding a detached relaunch under systemd.
+platform=()
+if [[ ${XDG_SESSION_TYPE:-} == wayland || -n ${WAYLAND_DISPLAY:-} ]]; then
+  platform=(--ozone-platform=x11)
+  for arg in "$@"; do
+    case "$arg" in --ozone-platform|--ozone-platform=*) platform=(); break ;; esac
+  done
+fi
+exec "$app/openbot" "${platform[@]}" "$@"
